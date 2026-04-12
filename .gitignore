@@ -1,0 +1,22 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+build/
+
+# Android / iOS / IDE
+android/.gradle/
+ios/Pods/
+ios/.symlinks/
+*.iml
+.idea/
+.vscode/
+
+# Generated
+pubspec.lock
+
+# React web
+web/node_modules/
+web/dist/

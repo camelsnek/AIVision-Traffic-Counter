@@ -1,0 +1,59 @@
+export const vehicleClasses = [
+  'car',
+  'truck',
+  'bus',
+  'motorcycle',
+] as const
+
+export type VehicleClass = (typeof vehicleClasses)[number]
+
+export type AnalyzerKind = 'onnx' | 'mock'
+export type ScanPreset = 'fast' | 'balanced' | 'dense'
+
+export interface DetectionRegion {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+export interface DetectionBox {
+  vehicleClass: VehicleClass
+  confidence: number
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+export interface TrackedVehicle {
+  trackId: number
+  vehicleClass: VehicleClass
+  confidence: number
+  boundingBox: DetectionBox
+  framesVisible: number
+  missedFrames: number
+  framesSinceCounted: number
+  previousCenterY: number
+  previousBottomY: number
+  maxBottomY: number
+  maxConfidence: number
+  counted: boolean
+}
+
+export interface AnalysisConfig {
+  confidenceThreshold: number
+  frameStride: number
+  countingLinePosition: number
+  detectionRegion: DetectionRegion
+  scanPreset: ScanPreset
+}
+
+export interface AnalysisSummary {
+  startedAt: string
+  endedAt: string
+  analyzerKind: AnalyzerKind
+  totalVehicles: number
+  counts: Record<VehicleClass, number>
+  fileName: string
+}

@@ -1,0 +1,44 @@
+:root {
+  color: #f7f8f4;
+  background:
+    radial-gradient(circle at top left, rgba(80, 149, 175, 0.18), transparent 30%),
+    radial-gradient(circle at top right, rgba(242, 157, 74, 0.16), transparent 24%),
+    linear-gradient(180deg, #071118 0%, #0c1720 45%, #11202a 100%);
+  font-family: 'Segoe UI', 'Avenir Next', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --panel: rgba(10, 20, 28, 0.72);
+  --panel-strong: rgba(9, 18, 24, 0.86);
+  --border: rgba(206, 227, 234, 0.14);
+  --text-soft: rgba(231, 238, 240, 0.72);
+  --accent: #ff7b54;
+  --accent-secondary: #4cc9c1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+code {
+  font-family: 'Consolas', 'SFMono-Regular', monospace;
+}
