@@ -18,15 +18,15 @@ export class OnnxVehicleAnalyzer implements VehicleAnalyzer {
   private model: Awaited<ReturnType<typeof AutoModel.from_pretrained>> | null = null
   private processor: Awaited<ReturnType<typeof AutoProcessor.from_pretrained>> | null = null
   private confidenceThreshold: number
-  private detectionRegion: DetectionRegion
   private scanPreset: ScanPreset
+  private detailLevel: number
   private readonly inputCanvas = document.createElement('canvas')
   private readonly tileCanvas = document.createElement('canvas')
 
   constructor(config: AnalysisConfig) {
     this.confidenceThreshold = config.confidenceThreshold
-    this.detectionRegion = config.detectionRegion
     this.scanPreset = config.scanPreset
+    this.detailLevel = config.detailLevel
   }
 
   async initialize(config: AnalysisConfig) {
@@ -43,24 +43,24 @@ export class OnnxVehicleAnalyzer implements VehicleAnalyzer {
 
   updateConfig(config: AnalysisConfig) {
     this.confidenceThreshold = config.confidenceThreshold
-    this.detectionRegion = config.detectionRegion
     this.scanPreset = config.scanPreset
+    this.detailLevel = config.detailLevel
   }
 
-  async analyze(source: CanvasImageSource) {
+  async analyze(source: CanvasImageSource, region: DetectionRegion) {
     if (!this.model || !this.processor) {
       throw new Error('Vehicle detector is not initialized.')
     }
 
     const canvas = this.ensureCanvas(source)
-    const passes = buildDetectionPasses(this.detectionRegion, this.scanPreset)
+    const passes = buildDetectionPasses(region, this.scanPreset, this.detailLevel)
     const groupedDetections: DetectionBox[][] = []
 
     for (const pass of passes) {
       groupedDetections.push(await this.runDetectionPass(canvas, pass))
     }
 
-    return mergeTileDetections(groupedDetections.flat(), this.scanPreset)
+    return mergeTileDetections(groupedDetections.flat(), this.scanPreset, this.detailLevel)
   }
 
   private ensureCanvas(source: CanvasImageSource) {
@@ -190,33 +190,37 @@ function clamp01(value: number) {
   return Math.min(1, Math.max(0, value))
 }
 
-function buildDetectionPasses(region: DetectionRegion, preset: ScanPreset): DetectionPass[] {
+function buildDetectionPasses(region: DetectionRegion, preset: ScanPreset, detailLevel: number) {
   const normalizedRegion = normalizeRegion(region)
+  const regionArea = normalizedRegion.width * normalizedRegion.height
+  const zoneBoost = regionArea <= 0.18 || normalizedRegion.height <= 0.22 ? 1 : 0
+  const presetMinimum = preset === 'dense' ? 3 : preset === 'balanced' ? 2 : 1
+  const effectiveDetail = clampDetail(Math.max(detailLevel, presetMinimum) + zoneBoost)
+  const passes = [normalizedRegion]
 
-  if (preset === 'fast') {
-    return [normalizedRegion]
+  if (effectiveDetail >= 2) {
+    passes.push(...createOverlappingGrid(normalizedRegion, 2, 1, 0.32))
   }
 
-  if (preset === 'balanced') {
-    return [
-      normalizedRegion,
-      cropHorizontal(normalizedRegion, 0, 0.58),
-      cropHorizontal(normalizedRegion, 0.42, 0.58),
-    ]
+  if (effectiveDetail >= 3) {
+    passes.push(...createOverlappingGrid(normalizedRegion, 2, 2, 0.26))
   }
 
-  return [
-    normalizedRegion,
-    cropHorizontal(normalizedRegion, 0, 0.52),
-    cropHorizontal(normalizedRegion, 0.24, 0.52),
-    cropHorizontal(normalizedRegion, 0.48, 0.52),
-  ]
+  if (effectiveDetail >= 4) {
+    passes.push(...createOverlappingGrid(normalizedRegion, 3, 2, 0.22))
+  }
+
+  if (effectiveDetail >= 5) {
+    passes.push(...createOverlappingGrid(normalizedRegion, 4, 2, 0.2))
+  }
+
+  return dedupePasses(passes)
 }
 
-function mergeTileDetections(detections: DetectionBox[], preset: ScanPreset) {
+function mergeTileDetections(detections: DetectionBox[], preset: ScanPreset, detailLevel: number) {
   const sorted = [...detections].sort((left, right) => right.confidence - left.confidence)
   const merged: DetectionBox[] = []
-  const iouThreshold = preset === 'dense' ? 0.42 : 0.38
+  const iouThreshold = resolveMergeIouThreshold(preset, detailLevel)
 
   while (sorted.length > 0) {
     const current = sorted.shift()
@@ -250,16 +254,59 @@ function normalizeRegion(region: DetectionRegion): DetectionPass {
   return { left, top, width, height }
 }
 
-function cropHorizontal(region: DetectionPass, localLeft: number, localWidth: number): DetectionPass {
-  const width = Math.min(region.width, region.width * localWidth)
-  const left = Math.min(region.left + region.width * localLeft, 1 - width)
+function createOverlappingGrid(region: DetectionPass, columns: number, rows: number, overlapRatio: number) {
+  const safeColumns = Math.max(1, columns)
+  const safeRows = Math.max(1, rows)
+  const horizontalStep = safeColumns === 1 ? region.width : region.width / safeColumns
+  const verticalStep = safeRows === 1 ? region.height : region.height / safeRows
+  const overlapWidth = safeColumns === 1 ? 0 : horizontalStep * overlapRatio
+  const overlapHeight = safeRows === 1 ? 0 : verticalStep * overlapRatio
+  const tileWidth = Math.min(region.width, horizontalStep + overlapWidth)
+  const tileHeight = Math.min(region.height, verticalStep + overlapHeight)
+  const passes: DetectionPass[] = []
 
-  return {
-    left,
-    top: region.top,
-    width,
-    height: region.height,
+  for (let row = 0; row < safeRows; row += 1) {
+    for (let column = 0; column < safeColumns; column += 1) {
+      const unclampedLeft = region.left + column * horizontalStep - overlapWidth / 2
+      const unclampedTop = region.top + row * verticalStep - overlapHeight / 2
+      const left = clamp(unclampedLeft, region.left, region.left + region.width - tileWidth)
+      const top = clamp(unclampedTop, region.top, region.top + region.height - tileHeight)
+
+      passes.push({
+        left,
+        top,
+        width: tileWidth,
+        height: tileHeight,
+      })
+    }
   }
+
+  return passes
+}
+
+function dedupePasses(passes: DetectionPass[]) {
+  const seen = new Set<string>()
+  return passes.filter((pass) => {
+    const key = [pass.left, pass.top, pass.width, pass.height].map((value) => value.toFixed(4)).join(':')
+    if (seen.has(key)) {
+      return false
+    }
+    seen.add(key)
+    return true
+  })
+}
+
+function resolveMergeIouThreshold(preset: ScanPreset, detailLevel: number) {
+  const presetBase = preset === 'dense' ? 0.56 : preset === 'balanced' ? 0.5 : 0.44
+  return Math.min(0.68, presetBase + Math.max(0, detailLevel - 1) * 0.03)
+}
+
+function clampDetail(value: number) {
+  return clamp(Math.round(value), 1, 5)
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function intersectionOverUnion(left: DetectionBox, right: DetectionBox) {

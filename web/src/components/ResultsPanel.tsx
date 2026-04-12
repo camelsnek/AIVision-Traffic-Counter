@@ -1,5 +1,5 @@
 import { formatDuration } from '../lib/format'
-import { vehicleClasses, type AnalysisSummary, type VehicleClass } from '../types'
+import { vehicleClasses, type AnalysisSummary, type VehicleClass, type ZoneSummary } from '../types'
 
 interface ResultsPanelProps {
   summary: AnalysisSummary | null
@@ -7,6 +7,7 @@ interface ResultsPanelProps {
   analyzerLabel: string
   elapsedSeconds: number
   currentTime: number
+  zoneSummaries: ZoneSummary[]
 }
 
 export function ResultsPanel({
@@ -15,6 +16,7 @@ export function ResultsPanel({
   analyzerLabel,
   elapsedSeconds,
   currentTime,
+  zoneSummaries,
 }: ResultsPanelProps) {
   const totalVehicles = Object.values(counts).reduce((sum, count) => sum + count, 0)
 
@@ -83,6 +85,30 @@ export function ResultsPanel({
         ) : (
           <p className="muted-copy">Finish or stop the scan to freeze a shareable result snapshot.</p>
         )}
+      </div>
+
+      <div className="results-card">
+        <div className="section-heading">
+          <h3>Zones</h3>
+          <span>Independent totals</span>
+        </div>
+        <div className="zone-summary-list">
+          {zoneSummaries.map((zone) => (
+            <div key={zone.zoneId} className="zone-summary-card">
+              <div className="count-row">
+                <span>{zone.label}</span>
+                <strong>{zone.totalVehicles}</strong>
+              </div>
+              <div className="zone-chip-row">
+                {vehicleClasses.map((vehicleClass) => (
+                  <span key={`${zone.zoneId}-${vehicleClass}`} className="mini-chip">
+                    {vehicleClass}: {zone.counts[vehicleClass]}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </aside>
   )

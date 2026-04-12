@@ -216,11 +216,23 @@
   gap: 8px;
 }
 
-.class-strip span {
+.class-strip span,
+.zone-chip {
   padding: 7px 12px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.06);
   font-size: 0.88rem;
+  border: 1px solid transparent;
+  color: #eef4ef;
+}
+
+.zone-chip {
+  cursor: pointer;
+}
+
+.zone-chip-active {
+  border-color: rgba(76, 201, 193, 0.45);
+  background: rgba(76, 201, 193, 0.16);
 }
 
 .error-banner {
@@ -295,6 +307,18 @@
   border-bottom-right-radius: 12px;
 }
 
+.detection-region-active {
+  border-style: solid;
+  border-color: rgba(76, 201, 193, 0.92);
+}
+
+.detection-region-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid rgba(76, 201, 193, 0.92);
+}
+
 .detection-region-handle {
   position: absolute;
   right: -10px;
@@ -365,7 +389,8 @@
 }
 
 .count-list,
-.summary-list {
+.summary-list,
+.zone-summary-list {
   display: grid;
   gap: 12px;
 }
@@ -393,6 +418,27 @@
 .summary-list dt,
 .summary-list dd {
   margin: 0;
+}
+
+.zone-summary-card {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.zone-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mini-chip {
+  display: inline-flex;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 0.8rem;
 }
 
 @media (max-width: 1080px) {

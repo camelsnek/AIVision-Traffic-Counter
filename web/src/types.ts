@@ -17,6 +17,13 @@ export interface DetectionRegion {
   height: number
 }
 
+export interface DetectionZone {
+  id: string
+  label: string
+  region: DetectionRegion
+  countingLineOffset: number
+}
+
 export interface DetectionBox {
   vehicleClass: VehicleClass
   confidence: number
@@ -39,14 +46,24 @@ export interface TrackedVehicle {
   maxBottomY: number
   maxConfidence: number
   counted: boolean
+  zoneId?: string
+  zoneLabel?: string
 }
 
 export interface AnalysisConfig {
   confidenceThreshold: number
-  frameStride: number
-  countingLinePosition: number
-  detectionRegion: DetectionRegion
+  analysisIntervalMs: number
+  detailLevel: number
+  detectionZones: DetectionZone[]
+  activeZoneId: string | null
   scanPreset: ScanPreset
+}
+
+export interface ZoneSummary {
+  zoneId: string
+  label: string
+  totalVehicles: number
+  counts: Record<VehicleClass, number>
 }
 
 export interface AnalysisSummary {
@@ -56,4 +73,5 @@ export interface AnalysisSummary {
   totalVehicles: number
   counts: Record<VehicleClass, number>
   fileName: string
+  zoneSummaries: ZoneSummary[]
 }

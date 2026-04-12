@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import type { PointerEvent, RefObject } from 'react'
 
 import { clamp } from '../lib/format'
-import type { DetectionRegion } from '../types'
+import type { DetectionRegion, DetectionZone } from '../types'
 
 type RegionHandle = 'move' | 'resize'
 
@@ -11,12 +11,15 @@ interface VideoStageProps {
   overlayRef: RefObject<HTMLCanvasElement | null>
   videoUrl: string | null
   statusLabel: string
-  detectionRegion: DetectionRegion
+  zones: DetectionZone[]
+  activeZoneId: string | null
   showRegionEditor: boolean
-  onDetectionRegionChange: (nextRegion: DetectionRegion) => void
+  onSelectZone: (zoneId: string) => void
+  onZoneRegionChange: (zoneId: string, nextRegion: DetectionRegion) => void
 }
 
 interface DragState {
+  zoneId: string
   mode: RegionHandle
   startX: number
   startY: number
@@ -28,31 +31,37 @@ export function VideoStage({
   overlayRef,
   videoUrl,
   statusLabel,
-  detectionRegion,
+  zones,
+  activeZoneId,
   showRegionEditor,
-  onDetectionRegionChange,
+  onSelectZone,
+  onZoneRegionChange,
 }: VideoStageProps) {
   const shellRef = useRef<HTMLDivElement>(null)
   const dragStateRef = useRef<DragState | null>(null)
 
-  function startDrag(event: PointerEvent, mode: RegionHandle) {
+  function startDrag(event: PointerEvent, zoneId: string, mode: RegionHandle) {
     if (!showRegionEditor) {
       return
     }
 
     const shell = shellRef.current
-    if (!shell) {
+    const zone = zones.find((entry) => entry.id == zoneId)
+    if (!shell || !zone) {
       return
     }
 
     event.preventDefault()
     event.stopPropagation()
 
+    onSelectZone(zoneId)
+
     dragStateRef.current = {
+      zoneId,
       mode,
       startX: event.clientX,
       startY: event.clientY,
-      initialRegion: detectionRegion,
+      initialRegion: zone.region,
     }
 
     shell.setPointerCapture(event.pointerId)
@@ -72,7 +81,7 @@ export function VideoStage({
     if (dragState.mode === 'move') {
       const nextLeft = clamp(dragState.initialRegion.left + deltaX, 0, 1 - dragState.initialRegion.width)
       const nextTop = clamp(dragState.initialRegion.top + deltaY, 0, 1 - dragState.initialRegion.height)
-      onDetectionRegionChange({
+      onZoneRegionChange(dragState.zoneId, {
         ...dragState.initialRegion,
         left: nextLeft,
         top: nextTop,
@@ -80,9 +89,9 @@ export function VideoStage({
       return
     }
 
-    const nextWidth = clamp(dragState.initialRegion.width + deltaX, 0.18, 1 - dragState.initialRegion.left)
-    const nextHeight = clamp(dragState.initialRegion.height + deltaY, 0.18, 1 - dragState.initialRegion.top)
-    onDetectionRegionChange({
+    const nextWidth = clamp(dragState.initialRegion.width + deltaX, 0.12, 1 - dragState.initialRegion.left)
+    const nextHeight = clamp(dragState.initialRegion.height + deltaY, 0.12, 1 - dragState.initialRegion.top)
+    onZoneRegionChange(dragState.zoneId, {
       ...dragState.initialRegion,
       width: nextWidth,
       height: nextHeight,
@@ -110,26 +119,45 @@ export function VideoStage({
           <>
             <video ref={videoRef} className="video-element" controls playsInline preload="metadata" src={videoUrl} />
             <canvas ref={overlayRef} className="video-overlay" />
-            <div
-              className={`detection-region${showRegionEditor ? ' detection-region-editable' : ''}`}
-              style={{
-                left: `${detectionRegion.left * 100}%`,
-                top: `${detectionRegion.top * 100}%`,
-                width: `${detectionRegion.width * 100}%`,
-                height: `${detectionRegion.height * 100}%`,
-              }}
-              onPointerDown={(event) => startDrag(event, 'move')}
-            >
-              <span className="detection-region-label">Detection zone</span>
-              {showRegionEditor ? (
-                <button
-                  type="button"
-                  className="detection-region-handle"
-                  onPointerDown={(event) => startDrag(event, 'resize')}
-                  aria-label="Resize detection region"
-                />
-              ) : null}
-            </div>
+            {zones.map((zone) => {
+              const isActive = zone.id === activeZoneId
+              return (
+                <div
+                  key={zone.id}
+                  className={[
+                    'detection-region',
+                    isActive ? 'detection-region-active' : '',
+                    showRegionEditor ? 'detection-region-editable' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' ')}
+                  style={{
+                    left: `${zone.region.left * 100}%`,
+                    top: `${zone.region.top * 100}%`,
+                    width: `${zone.region.width * 100}%`,
+                    height: `${zone.region.height * 100}%`,
+                  }}
+                  onPointerDown={(event) => startDrag(event, zone.id, 'move')}
+                  onClick={() => onSelectZone(zone.id)}
+                >
+                  <span className="detection-region-label">{zone.label}</span>
+                  <div
+                    className="detection-region-line"
+                    style={{
+                      top: `${zone.countingLineOffset * 100}%`,
+                    }}
+                  />
+                  {showRegionEditor && isActive ? (
+                    <button
+                      type="button"
+                      className="detection-region-handle"
+                      onPointerDown={(event) => startDrag(event, zone.id, 'resize')}
+                      aria-label={`Resize ${zone.label}`}
+                    />
+                  ) : null}
+                </div>
+              )
+            })}
           </>
         ) : (
           <div className="empty-state">
@@ -139,7 +167,7 @@ export function VideoStage({
       </div>
       <div className="stage-footer">
         <span className="status-pill">{statusLabel}</span>
-        <p>Browser analysis uses the local file only. No upload is required for the web workflow.</p>
+        <p>Each detection zone now tracks and counts independently, which works well for opposite traffic directions.</p>
       </div>
     </section>
   )

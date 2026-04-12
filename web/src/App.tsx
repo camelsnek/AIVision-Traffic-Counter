@@ -7,8 +7,19 @@ import { drawOverlay } from './lib/drawOverlay'
 import { formatDuration } from './lib/format'
 import { VehicleTracker } from './lib/vehicleTracker'
 import type { VehicleAnalyzer } from './services/vehicleAnalyzer'
-import { vehicleClasses, type AnalysisConfig, type AnalysisSummary, type VehicleClass, type TrackedVehicle } from './types'
+import {
+  vehicleClasses,
+  type AnalysisConfig,
+  type AnalysisSummary,
+  type DetectionRegion,
+  type DetectionZone,
+  type TrackedVehicle,
+  type VehicleClass,
+  type ZoneSummary,
+} from './types'
 import './App.css'
+
+const INITIAL_ZONES = createInitialZones()
 
 function App() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
@@ -17,40 +28,52 @@ function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [analyzerLabel, setAnalyzerLabel] = useState('Not initialized')
   const [tracks, setTracks] = useState<TrackedVehicle[]>([])
-  const [counts, setCounts] = useState<Record<VehicleClass, number>>(createEmptyCounts)
+  const [counts, setCounts] = useState<Record<VehicleClass, number>>(() => createEmptyCounts())
+  const [zoneSummaries, setZoneSummaries] = useState<ZoneSummary[]>(() => createEmptyZoneSummaries(INITIAL_ZONES))
   const [summary, setSummary] = useState<AnalysisSummary | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
   const [showRegionEditor, setShowRegionEditor] = useState(false)
-  const [config, setConfig] = useState<AnalysisConfig>({
-    confidenceThreshold: 0.25,
-    frameStride: 1,
-    countingLinePosition: 0.52,
-    detectionRegion: {
-      left: 0.08,
-      top: 0.2,
-      width: 0.84,
-      height: 0.72,
-    },
-    scanPreset: 'balanced',
-  })
+  const [config, setConfig] = useState<AnalysisConfig>(() => ({
+    confidenceThreshold: 0.22,
+    analysisIntervalMs: 70,
+    detailLevel: 2,
+    scanPreset: 'fast',
+    activeZoneId: INITIAL_ZONES[0]?.id ?? null,
+    detectionZones: INITIAL_ZONES,
+  }))
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const analyzerRef = useRef<VehicleAnalyzer | null>(null)
-  const trackerRef = useRef(new VehicleTracker())
+  const configRef = useRef<AnalysisConfig>({
+    confidenceThreshold: 0.22,
+    analysisIntervalMs: 70,
+    detailLevel: 2,
+    scanPreset: 'fast',
+    activeZoneId: INITIAL_ZONES[0]?.id ?? null,
+    detectionZones: INITIAL_ZONES,
+  })
+  const trackerMapRef = useRef(new Map<string, VehicleTracker>())
   const rafRef = useRef<number | null>(null)
   const objectUrlRef = useRef<string | null>(null)
   const sessionStartRef = useRef<number | null>(null)
-  const frameIndexRef = useRef(0)
   const countsRef = useRef<Record<VehicleClass, number>>(createEmptyCounts())
+  const zoneCountsRef = useRef<Record<string, Record<VehicleClass, number>>>(createZoneCountMap(INITIAL_ZONES))
   const isRunningRef = useRef(false)
   const analysisInFlightRef = useRef(false)
   const usingVideoFrameCallbackRef = useRef(false)
   const overlayFramePendingRef = useRef(false)
+  const lastAnalyzedAtRef = useRef(0)
+  const lastAnalyzedVideoTimeRef = useRef(-1)
 
   const deferredTracks = useDeferredValue(tracks)
   const deferredCounts = useDeferredValue(counts)
+  const deferredZoneSummaries = useDeferredValue(zoneSummaries)
+
+  useEffect(() => {
+    configRef.current = config
+  }, [config])
 
   useEffect(() => {
     return () => {
@@ -74,10 +97,10 @@ function App() {
     }
     overlayFramePendingRef.current = true
     requestAnimationFrame(() => {
-      drawOverlay(overlay, video, deferredTracks, config.countingLinePosition)
+      drawOverlay(overlay, video, deferredTracks, config.detectionZones)
       overlayFramePendingRef.current = false
     })
-  }, [config.countingLinePosition, deferredTracks, videoUrl])
+  }, [config.detectionZones, deferredTracks, videoUrl])
 
   useEffect(() => {
     if (!isRunningRef.current) {
@@ -113,12 +136,13 @@ function App() {
     setStatus('Video loaded. Ready to scan.')
     setErrorMessage(null)
     setSummary(null)
-    resetSessionState()
+    resetSessionState(configRef.current.detectionZones)
   }
 
   async function startAnalysis() {
     const video = videoRef.current
-    if (!video || !videoUrl) {
+    const currentConfig = configRef.current
+    if (!video || !videoUrl || currentConfig.detectionZones.length === 0) {
       return
     }
 
@@ -126,12 +150,12 @@ function App() {
     setErrorMessage(null)
     setSummary(null)
     setStatus('Initializing analyzer...')
-    resetSessionState()
+    resetSessionState(currentConfig.detectionZones)
 
     try {
-      const analyzer = await initializeAnalyzer(config)
+      const analyzer = await initializeAnalyzer(currentConfig)
       analyzerRef.current = analyzer
-      setAnalyzerLabel(`YOLOv10n ${config.scanPreset}`)
+      setAnalyzerLabel(`YOLOv10n ${currentConfig.scanPreset}`)
 
       video.currentTime = 0
       sessionStartRef.current = getNowMs()
@@ -157,8 +181,32 @@ function App() {
   }
 
   function finalizeAnalysis() {
-    const flush = trackerRef.current.flush(config.countingLinePosition)
-    applyTrackingUpdate(flush.activeTracks, flush.newlyCountedClasses)
+    const currentConfig = configRef.current
+    const nextZoneCounts = cloneZoneCountMap(zoneCountsRef.current)
+    const overlayTracks: TrackedVehicle[] = []
+
+    for (const zone of currentConfig.detectionZones) {
+      const tracker = trackerMapRef.current.get(zone.id)
+      if (!tracker) {
+        continue
+      }
+
+      const absoluteLine = getAbsoluteCountingLine(zone)
+      const flush = tracker.flush(absoluteLine)
+      for (const vehicleClass of flush.newlyCountedClasses) {
+        nextZoneCounts[zone.id][vehicleClass] += 1
+      }
+      overlayTracks.push(
+        ...flush.activeTracks.map((track) => ({
+          ...track,
+          zoneId: zone.id,
+          zoneLabel: zone.label,
+        })),
+      )
+    }
+
+    zoneCountsRef.current = nextZoneCounts
+    applyZoneState(nextZoneCounts, overlayTracks, currentConfig.detectionZones)
     isRunningRef.current = false
     stopLoop()
     finalizeSummary('Analysis complete')
@@ -174,15 +222,18 @@ function App() {
       return
     }
 
+    const currentConfig = configRef.current
     const analyzerKind = analyzerRef.current?.kind ?? 'mock'
-    const totalVehicles = Object.values(countsRef.current).reduce((sum, count) => sum + count, 0)
+    const overallCounts = buildOverallCounts(zoneCountsRef.current)
+    const totalVehicles = Object.values(overallCounts).reduce((sum, count) => sum + count, 0)
     setSummary({
       startedAt: new Date(startedAt).toISOString(),
       endedAt: getIsoNow(),
       analyzerKind,
       totalVehicles,
-      counts: { ...countsRef.current },
+      counts: overallCounts,
       fileName: selectedFileName,
+      zoneSummaries: buildZoneSummaries(currentConfig.detectionZones, zoneCountsRef.current),
     })
   }
 
@@ -197,31 +248,36 @@ function App() {
     setSummary(null)
     setStatus(videoUrl ? 'Video loaded. Ready to scan.' : 'Choose a road video to begin')
     setErrorMessage(null)
-    resetSessionState()
+    resetSessionState(config.detectionZones)
   }
 
-  function applyTrackingUpdate(nextTracks: TrackedVehicle[], newlyCountedClasses: VehicleClass[]) {
-    const nextCounts = { ...countsRef.current }
-    for (const vehicleClass of newlyCountedClasses) {
-      nextCounts[vehicleClass] += 1
-    }
-    countsRef.current = nextCounts
+  function resetSessionState(zones: DetectionZone[]) {
+    trackerMapRef.current = new Map()
+    sessionStartRef.current = null
+    lastAnalyzedAtRef.current = 0
+    lastAnalyzedVideoTimeRef.current = -1
+    countsRef.current = createEmptyCounts()
+    zoneCountsRef.current = createZoneCountMap(zones)
+    setCounts(createEmptyCounts())
+    setTracks([])
+    setZoneSummaries(createEmptyZoneSummaries(zones))
+    setElapsedSeconds(0)
+    setCurrentTime(0)
+  }
+
+  function applyZoneState(
+    nextZoneCounts: Record<string, Record<VehicleClass, number>>,
+    nextTracks: TrackedVehicle[],
+    zones: DetectionZone[],
+  ) {
+    countsRef.current = buildOverallCounts(nextZoneCounts)
+    zoneCountsRef.current = nextZoneCounts
 
     startTransition(() => {
       setTracks(nextTracks)
-      setCounts(nextCounts)
+      setCounts(countsRef.current)
+      setZoneSummaries(buildZoneSummaries(zones, nextZoneCounts))
     })
-  }
-
-  function resetSessionState() {
-    trackerRef.current.reset()
-    frameIndexRef.current = 0
-    sessionStartRef.current = null
-    countsRef.current = createEmptyCounts()
-    setCounts(createEmptyCounts())
-    setTracks([])
-    setElapsedSeconds(0)
-    setCurrentTime(0)
   }
 
   function stopLoop() {
@@ -256,16 +312,41 @@ function App() {
         return
       }
 
-      frameIndexRef.current += 1
-      const shouldAnalyze = frameIndexRef.current % config.frameStride === 0
+      const currentConfig = configRef.current
+      const currentNow = getNowMs()
+      const videoTimeDelta = Math.abs(video.currentTime - lastAnalyzedVideoTimeRef.current)
+      const shouldAnalyze =
+        currentNow - lastAnalyzedAtRef.current >= currentConfig.analysisIntervalMs &&
+        videoTimeDelta >= 1 / 120
 
       if (shouldAnalyze && !analysisInFlightRef.current) {
         analysisInFlightRef.current = true
+        lastAnalyzedAtRef.current = currentNow
+        lastAnalyzedVideoTimeRef.current = video.currentTime
         try {
-          analyzer.updateConfig(config)
-          const detections = await analyzer.analyze(video)
-          const update = trackerRef.current.update(detections, config.countingLinePosition)
-          applyTrackingUpdate(update.activeTracks, update.newlyCountedClasses)
+          analyzer.updateConfig(currentConfig)
+          const nextZoneCounts = cloneZoneCountMap(zoneCountsRef.current)
+          const nextTracks: TrackedVehicle[] = []
+
+          for (const zone of currentConfig.detectionZones) {
+            const detections = await analyzer.analyze(video, zone.region)
+            const tracker = getZoneTracker(zone.id)
+            const update = tracker.update(detections, getAbsoluteCountingLine(zone))
+
+            for (const vehicleClass of update.newlyCountedClasses) {
+              nextZoneCounts[zone.id][vehicleClass] += 1
+            }
+
+            nextTracks.push(
+              ...update.activeTracks.map((track) => ({
+                ...track,
+                zoneId: zone.id,
+                zoneLabel: zone.label,
+              })),
+            )
+          }
+
+          applyZoneState(nextZoneCounts, nextTracks, currentConfig.detectionZones)
           startTransition(() => {
             setCurrentTime(video.currentTime)
           })
@@ -295,6 +376,88 @@ function App() {
     })
   }
 
+  function getZoneTracker(zoneId: string) {
+    const existing = trackerMapRef.current.get(zoneId)
+    if (existing) {
+      return existing
+    }
+
+    const tracker = new VehicleTracker()
+    trackerMapRef.current.set(zoneId, tracker)
+    return tracker
+  }
+
+  function addZone() {
+    const zone = createDefaultZone(configRef.current.detectionZones.length + 1)
+    const nextZones = [...configRef.current.detectionZones, zone]
+    commitZoneLayout(nextZones, zone.id)
+  }
+
+  function removeActiveZone() {
+    const currentConfig = configRef.current
+    if (!currentConfig.activeZoneId || currentConfig.detectionZones.length <= 1) {
+      return
+    }
+
+    const nextZones = currentConfig.detectionZones.filter((zone) => zone.id !== currentConfig.activeZoneId)
+    commitZoneLayout(nextZones, nextZones[0]?.id ?? null)
+  }
+
+  function updateZoneRegion(zoneId: string, region: DetectionRegion) {
+    setConfig((current) => ({
+      ...current,
+      detectionZones: current.detectionZones.map((zone) =>
+        zone.id === zoneId
+          ? {
+              ...zone,
+              region,
+            }
+          : zone,
+      ),
+    }))
+  }
+
+  function updateZoneLine(zoneId: string, countingLineOffset: number) {
+    setConfig((current) => ({
+      ...current,
+      detectionZones: current.detectionZones.map((zone) =>
+        zone.id === zoneId
+          ? {
+              ...zone,
+              countingLineOffset,
+            }
+          : zone,
+      ),
+    }))
+  }
+
+  function commitZoneLayout(nextZones: DetectionZone[], activeZoneId: string | null) {
+    const currentConfig = configRef.current
+    const nextConfig = {
+      ...currentConfig,
+      activeZoneId,
+      detectionZones: nextZones,
+    }
+    const nextZoneCounts = syncZoneCountMap(zoneCountsRef.current, nextZones)
+    const nextZoneIds = new Set(nextZones.map((zone) => zone.id))
+
+    configRef.current = nextConfig
+    zoneCountsRef.current = nextZoneCounts
+    countsRef.current = buildOverallCounts(nextZoneCounts)
+    trackerMapRef.current = new Map(
+      [...trackerMapRef.current.entries()].filter(([zoneId]) => nextZoneIds.has(zoneId)),
+    )
+
+    setConfig(nextConfig)
+    startTransition(() => {
+      setCounts(countsRef.current)
+      setZoneSummaries(buildZoneSummaries(nextZones, nextZoneCounts))
+      setTracks((currentTracks) => currentTracks.filter((track) => !track.zoneId || nextZoneIds.has(track.zoneId)))
+    })
+  }
+
+  const activeZone = config.detectionZones.find((zone) => zone.id === config.activeZoneId) ?? config.detectionZones[0] ?? null
+
   return (
     <main className="app-shell">
       <section className="hero-panel">
@@ -302,8 +465,8 @@ function App() {
           <p className="eyebrow">RoadScope Web</p>
           <h1>Drop in a traffic video and scan passing vehicles in the browser.</h1>
           <p className="hero-description">
-            This React app mirrors the mobile flow: upload a local road clip, run detection frame by frame,
-            track each vehicle once, and keep live totals for the session.
+            This React app now supports multiple independent detection zones, which is ideal for opposite traffic
+            directions or separate carriageways in the same shot.
           </p>
         </div>
         <div className="hero-stats">
@@ -341,9 +504,9 @@ function App() {
                 <span>Confidence {config.confidenceThreshold.toFixed(2)}</span>
                 <input
                   type="range"
-                  min="0.2"
-                  max="0.9"
-                  step="0.05"
+                  min="0.12"
+                  max="0.75"
+                  step="0.02"
                   value={config.confidenceThreshold}
                   onChange={(event) =>
                     setConfig((current) => ({
@@ -354,33 +517,33 @@ function App() {
                 />
               </label>
               <label>
-                <span>Frame Stride {config.frameStride}</span>
+                <span>Scan Interval {config.analysisIntervalMs} ms</span>
                 <input
                   type="range"
-                  min="1"
-                  max="8"
-                  step="1"
-                  value={config.frameStride}
+                  min="30"
+                  max="220"
+                  step="10"
+                  value={config.analysisIntervalMs}
                   onChange={(event) =>
                     setConfig((current) => ({
                       ...current,
-                      frameStride: Number(event.target.value),
+                      analysisIntervalMs: Number(event.target.value),
                     }))
                   }
                 />
               </label>
               <label>
-                <span>Count Line {Math.round(config.countingLinePosition * 100)}%</span>
+                <span>Zone Detail {config.detailLevel}</span>
                 <input
                   type="range"
-                  min="0.35"
-                  max="0.9"
-                  step="0.01"
-                  value={config.countingLinePosition}
+                  min="1"
+                  max="5"
+                  step="1"
+                  value={config.detailLevel}
                   onChange={(event) =>
                     setConfig((current) => ({
                       ...current,
-                      countingLinePosition: Number(event.target.value),
+                      detailLevel: Number(event.target.value),
                     }))
                   }
                 />
@@ -393,7 +556,10 @@ function App() {
                     setConfig((current) => ({
                       ...current,
                       scanPreset: event.target.value as AnalysisConfig['scanPreset'],
-                      frameStride: event.target.value === 'fast' ? 2 : 1,
+                      analysisIntervalMs:
+                        event.target.value === 'fast' ? 70 : event.target.value === 'balanced' ? 100 : 130,
+                      detailLevel:
+                        event.target.value === 'fast' ? 2 : event.target.value === 'balanced' ? 3 : 4,
                     }))
                   }
                 >
@@ -401,6 +567,24 @@ function App() {
                   <option value="balanced">Balanced</option>
                   <option value="dense">Dense Traffic</option>
                 </select>
+              </label>
+              <label>
+                <span>
+                  Zone Line {activeZone ? Math.round(activeZone.countingLineOffset * 100) : 0}%
+                </span>
+                <input
+                  type="range"
+                  min="0.2"
+                  max="0.95"
+                  step="0.01"
+                  value={activeZone?.countingLineOffset ?? 0.5}
+                  onChange={(event) => {
+                    if (!activeZone) {
+                      return
+                    }
+                    updateZoneLine(activeZone.id, Number(event.target.value))
+                  }}
+                />
               </label>
             </div>
 
@@ -414,31 +598,39 @@ function App() {
               <button className="ghost-button" type="button" onClick={resetAll}>
                 Reset
               </button>
-              <button
-                className="ghost-button"
-                type="button"
-                onClick={() => setShowRegionEditor((current) => !current)}
-                disabled={!videoUrl}
-              >
-                {showRegionEditor ? 'Lock Zone' : 'Edit Zone'}
+              <button className="ghost-button" type="button" onClick={() => setShowRegionEditor((current) => !current)} disabled={!videoUrl}>
+                {showRegionEditor ? 'Lock Zones' : 'Edit Zones'}
+              </button>
+              <button className="ghost-button" type="button" onClick={addZone}>
+                Add Zone
+              </button>
+              <button className="ghost-button" type="button" onClick={removeActiveZone} disabled={config.detectionZones.length <= 1}>
+                Remove Zone
               </button>
             </div>
 
             <div className="class-strip">
-              {vehicleClasses.map((vehicleClass) => (
-                <span key={vehicleClass}>{vehicleClass}</span>
+              {config.detectionZones.map((zone) => (
+                <button
+                  key={zone.id}
+                  type="button"
+                  className={`zone-chip${zone.id === config.activeZoneId ? ' zone-chip-active' : ''}`}
+                  onClick={() =>
+                    setConfig((current) => ({
+                      ...current,
+                      activeZoneId: zone.id,
+                    }))
+                  }
+                >
+                  {zone.label}
+                </button>
               ))}
             </div>
 
             {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
             <p className="helper-copy">
-              This web build uses a real locally downloaded YOLOv10n detector from
-              <code> /public/models/onnx-community/yolov10n </code> and reports only
-              <code> car</code>, <code>truck</code>, <code>bus</code>, and <code>motorcycle</code>.
-            </p>
-            <p className="helper-copy">
-              Use <code>Edit Zone</code> to drag the detection box over the active lanes only. Smaller zones scan
-              faster, render smoother, and usually count better than analyzing the whole frame.
+              Each zone is detected, tracked, and counted separately. Lower scan interval is faster, while higher zone
+              detail helps smaller vehicles in dense highway traffic.
             </p>
           </div>
 
@@ -447,14 +639,16 @@ function App() {
             overlayRef={overlayRef}
             videoUrl={videoUrl}
             statusLabel={`${status} • ${formatDuration(currentTime)} video time`}
-            detectionRegion={config.detectionRegion}
+            zones={config.detectionZones}
+            activeZoneId={config.activeZoneId}
             showRegionEditor={showRegionEditor}
-            onDetectionRegionChange={(detectionRegion) =>
+            onSelectZone={(zoneId) =>
               setConfig((current) => ({
                 ...current,
-                detectionRegion,
+                activeZoneId: zoneId,
               }))
             }
+            onZoneRegionChange={updateZoneRegion}
           />
         </div>
 
@@ -464,6 +658,7 @@ function App() {
           analyzerLabel={analyzerLabel}
           elapsedSeconds={elapsedSeconds}
           currentTime={currentTime}
+          zoneSummaries={deferredZoneSummaries}
         />
       </section>
     </main>
@@ -479,6 +674,29 @@ async function initializeAnalyzer(config: AnalysisConfig) {
   return analyzer
 }
 
+function createInitialZones() {
+  return [createDefaultZone(1)]
+}
+
+function createDefaultZone(index: number): DetectionZone {
+  const safeIndex = Math.max(1, index)
+  const left = safeIndex % 2 === 0 ? 0.08 : 0.08
+  const top = safeIndex % 2 === 0 ? 0.08 : 0.2
+  const height = safeIndex % 2 === 0 ? 0.32 : 0.42
+
+  return {
+    id: `zone-${safeIndex}-${Math.random().toString(36).slice(2, 7)}`,
+    label: `Zone ${safeIndex}`,
+    region: {
+      left,
+      top,
+      width: 0.84,
+      height,
+    },
+    countingLineOffset: 0.52,
+  }
+}
+
 function createEmptyCounts() {
   return {
     car: 0,
@@ -486,6 +704,64 @@ function createEmptyCounts() {
     bus: 0,
     motorcycle: 0,
   } satisfies Record<VehicleClass, number>
+}
+
+function createZoneCountMap(zones: DetectionZone[]) {
+  return Object.fromEntries(zones.map((zone) => [zone.id, createEmptyCounts()]))
+}
+
+function syncZoneCountMap(
+  zoneCounts: Record<string, Record<VehicleClass, number>>,
+  zones: DetectionZone[],
+) {
+  return Object.fromEntries(
+    zones.map((zone) => [zone.id, { ...(zoneCounts[zone.id] ?? createEmptyCounts()) }]),
+  ) as Record<string, Record<VehicleClass, number>>
+}
+
+function cloneZoneCountMap(zoneCounts: Record<string, Record<VehicleClass, number>>) {
+  return Object.fromEntries(
+    Object.entries(zoneCounts).map(([zoneId, counts]) => [zoneId, { ...counts }]),
+  ) as Record<string, Record<VehicleClass, number>>
+}
+
+function buildOverallCounts(zoneCounts: Record<string, Record<VehicleClass, number>>) {
+  const counts = createEmptyCounts()
+  for (const zoneCount of Object.values(zoneCounts)) {
+    for (const vehicleClass of vehicleClasses) {
+      counts[vehicleClass] += zoneCount[vehicleClass] ?? 0
+    }
+  }
+  return counts
+}
+
+function createEmptyZoneSummaries(zones: DetectionZone[]) {
+  return zones.map(createZoneSummary)
+}
+
+function createZoneSummary(zone: DetectionZone): ZoneSummary {
+  return {
+    zoneId: zone.id,
+    label: zone.label,
+    totalVehicles: 0,
+    counts: createEmptyCounts(),
+  }
+}
+
+function buildZoneSummaries(zones: DetectionZone[], zoneCounts: Record<string, Record<VehicleClass, number>>) {
+  return zones.map((zone) => {
+    const counts = zoneCounts[zone.id] ?? createEmptyCounts()
+    return {
+      zoneId: zone.id,
+      label: zone.label,
+      totalVehicles: Object.values(counts).reduce((sum, count) => sum + count, 0),
+      counts,
+    }
+  })
+}
+
+function getAbsoluteCountingLine(zone: DetectionZone) {
+  return zone.region.top + zone.region.height * zone.countingLineOffset
 }
 
 function getNowMs() {

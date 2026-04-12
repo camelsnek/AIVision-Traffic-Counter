@@ -1,10 +1,10 @@
-import type { TrackedVehicle } from '../types'
+import type { DetectionZone, TrackedVehicle } from '../types'
 
 export function drawOverlay(
   canvas: HTMLCanvasElement,
   video: HTMLVideoElement,
   tracks: TrackedVehicle[],
-  countingLinePosition: number,
+  zones: DetectionZone[],
 ) {
   const width = video.videoWidth || video.clientWidth
   const height = video.videoHeight || video.clientHeight
@@ -26,14 +26,24 @@ export function drawOverlay(
 
   context.clearRect(0, 0, width, height)
 
-  context.strokeStyle = '#ff7b54'
-  context.lineWidth = 2
-  context.beginPath()
-  context.moveTo(0, height * countingLinePosition)
-  context.lineTo(width, height * countingLinePosition)
-  context.stroke()
-
   context.font = '600 12px "Segoe UI", sans-serif'
+
+  for (const zone of zones) {
+    context.strokeStyle = 'rgba(255, 123, 84, 0.85)'
+    context.lineWidth = 1.5
+    context.strokeRect(
+      zone.region.left * width,
+      zone.region.top * height,
+      zone.region.width * width,
+      zone.region.height * height,
+    )
+
+    const lineY = (zone.region.top + zone.region.height * zone.countingLineOffset) * height
+    context.beginPath()
+    context.moveTo(zone.region.left * width, lineY)
+    context.lineTo((zone.region.left + zone.region.width) * width, lineY)
+    context.stroke()
+  }
 
   for (const track of tracks) {
     const left = track.boundingBox.left * width
@@ -46,7 +56,7 @@ export function drawOverlay(
     context.strokeRect(left, top, boxWidth, boxHeight)
 
     if (track.counted) {
-      const label = track.vehicleClass.toUpperCase()
+      const label = `${track.zoneLabel ? `${track.zoneLabel}: ` : ''}${track.vehicleClass.toUpperCase()}`
       const labelWidth = context.measureText(label).width + 12
       const labelTop = Math.max(0, top - 22)
 
