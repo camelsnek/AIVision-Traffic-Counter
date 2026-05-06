@@ -11,38 +11,42 @@ interface MatchCandidate {
   score: number
 }
 
+interface VehicleTrackerOptions {
+  maxCenterDistance?: number
+  maxMissedFrames?: number
+  minVisibleFramesBeforeCounting?: number
+  exitCountSlack?: number
+  minIoUForDirectMatch?: number
+  maxUpwardDrift?: number
+  countedTrackReleaseDistance?: number
+}
+
+interface ResolvedVehicleTrackerOptions {
+  maxCenterDistance: number
+  maxMissedFrames: number
+  minVisibleFramesBeforeCounting: number
+  exitCountSlack: number
+  minIoUForDirectMatch: number
+  maxUpwardDrift: number
+  countedTrackReleaseDistance: number
+}
+
 export class VehicleTracker {
-  private readonly maxCenterDistance: number
-  private readonly maxMissedFrames: number
-  private readonly minVisibleFramesBeforeCounting: number
-  private readonly exitCountSlack: number
-  private readonly minIoUForDirectMatch: number
-  private readonly maxUpwardDrift: number
-  private readonly countedTrackReleaseDistance: number
+  private options: ResolvedVehicleTrackerOptions
   private nextTrackId = 1
   private tracks = new Map<number, TrackedVehicle>()
 
-  constructor(
-    maxCenterDistance = 0.22,
-    maxMissedFrames = 14,
-    minVisibleFramesBeforeCounting = 1,
-    exitCountSlack = 0.22,
-    minIoUForDirectMatch = 0.05,
-    maxUpwardDrift = 0.035,
-    countedTrackReleaseDistance = 0.12,
-  ) {
-    this.maxCenterDistance = maxCenterDistance
-    this.maxMissedFrames = maxMissedFrames
-    this.minVisibleFramesBeforeCounting = minVisibleFramesBeforeCounting
-    this.exitCountSlack = exitCountSlack
-    this.minIoUForDirectMatch = minIoUForDirectMatch
-    this.maxUpwardDrift = maxUpwardDrift
-    this.countedTrackReleaseDistance = countedTrackReleaseDistance
+  constructor(options: VehicleTrackerOptions = {}) {
+    this.options = resolveOptions(options)
   }
 
   reset() {
     this.nextTrackId = 1
     this.tracks.clear()
+  }
+
+  updateOptions(options: VehicleTrackerOptions) {
+    this.options = resolveOptions(options)
   }
 
   update(detections: DetectionBox[], countingLinePosition: number): TrackingUpdate {
@@ -53,9 +57,9 @@ export class VehicleTracker {
     const matchCandidates = buildMatchCandidates({
       tracks: [...this.tracks.values()],
       detections,
-      maxCenterDistance: this.maxCenterDistance,
-      minIoUForDirectMatch: this.minIoUForDirectMatch,
-      maxUpwardDrift: this.maxUpwardDrift,
+      maxCenterDistance: this.options.maxCenterDistance,
+      minIoUForDirectMatch: this.options.minIoUForDirectMatch,
+      maxUpwardDrift: this.options.maxUpwardDrift,
     })
 
     for (const candidate of matchCandidates) {
@@ -77,7 +81,7 @@ export class VehicleTracker {
       const crossedLine =
         previous.previousBottomY < countingLinePosition &&
         currentBottomY >= countingLinePosition &&
-        previous.framesVisible + 1 >= this.minVisibleFramesBeforeCounting
+        previous.framesVisible + 1 >= this.options.minVisibleFramesBeforeCounting
 
       const counted = previous.counted || crossedLine
       const vehicleClass = detection.confidence >= previous.maxConfidence ? detection.vehicleClass : previous.vehicleClass
@@ -134,8 +138,8 @@ export class VehicleTracker {
       }
 
       const missedFrames = previous.missedFrames + 1
-      if (missedFrames > this.maxMissedFrames) {
-        if (shouldCountOnExit(previous, countingLinePosition, this.minVisibleFramesBeforeCounting, this.exitCountSlack)) {
+      if (missedFrames > this.options.maxMissedFrames) {
+        if (shouldCountOnExit(previous, countingLinePosition, this.options.minVisibleFramesBeforeCounting, this.options.exitCountSlack)) {
           newlyCountedClasses.push(previous.vehicleClass)
         }
         continue
@@ -143,7 +147,7 @@ export class VehicleTracker {
 
       if (
         previous.counted &&
-        previous.maxBottomY >= countingLinePosition + this.countedTrackReleaseDistance &&
+        previous.maxBottomY >= countingLinePosition + this.options.countedTrackReleaseDistance &&
         missedFrames >= 2
       ) {
         continue
@@ -168,7 +172,7 @@ export class VehicleTracker {
     const newlyCountedClasses: TrackedVehicle['vehicleClass'][] = []
 
     for (const track of this.tracks.values()) {
-      if (shouldCountOnExit(track, countingLinePosition, this.minVisibleFramesBeforeCounting, this.exitCountSlack)) {
+      if (shouldCountOnExit(track, countingLinePosition, this.options.minVisibleFramesBeforeCounting, this.options.exitCountSlack)) {
         newlyCountedClasses.push(track.vehicleClass)
       }
     }
@@ -179,6 +183,18 @@ export class VehicleTracker {
       activeTracks: [],
       newlyCountedClasses,
     }
+  }
+}
+
+function resolveOptions(options: VehicleTrackerOptions): ResolvedVehicleTrackerOptions {
+  return {
+    maxCenterDistance: options.maxCenterDistance ?? 0.22,
+    maxMissedFrames: options.maxMissedFrames ?? 14,
+    minVisibleFramesBeforeCounting: options.minVisibleFramesBeforeCounting ?? 1,
+    exitCountSlack: options.exitCountSlack ?? 0.22,
+    minIoUForDirectMatch: options.minIoUForDirectMatch ?? 0.05,
+    maxUpwardDrift: options.maxUpwardDrift ?? 0.035,
+    countedTrackReleaseDistance: options.countedTrackReleaseDistance ?? 0.12,
   }
 }
 

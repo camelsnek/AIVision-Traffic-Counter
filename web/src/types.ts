@@ -9,6 +9,7 @@ export type VehicleClass = (typeof vehicleClasses)[number]
 
 export type AnalyzerKind = 'onnx' | 'mock'
 export type ScanPreset = 'fast' | 'balanced' | 'dense'
+export type ModelProfileId = 'onnx-community/yolov10n' | 'onnx-community/yolov10m'
 
 export interface DetectionRegion {
   left: number
@@ -51,9 +52,11 @@ export interface TrackedVehicle {
 }
 
 export interface AnalysisConfig {
+  modelProfileId: ModelProfileId
   confidenceThreshold: number
   analysisIntervalMs: number
   detailLevel: number
+  trackingBias: number
   detectionZones: DetectionZone[]
   activeZoneId: string | null
   scanPreset: ScanPreset

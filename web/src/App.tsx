@@ -5,6 +5,7 @@ import { ResultsPanel } from './components/ResultsPanel'
 import { VideoStage } from './components/VideoStage'
 import { drawOverlay } from './lib/drawOverlay'
 import { formatDuration } from './lib/format'
+import { getModelProfile, modelProfiles } from './lib/modelProfiles'
 import { VehicleTracker } from './lib/vehicleTracker'
 import type { VehicleAnalyzer } from './services/vehicleAnalyzer'
 import {
@@ -35,9 +36,11 @@ function App() {
   const [currentTime, setCurrentTime] = useState(0)
   const [showRegionEditor, setShowRegionEditor] = useState(false)
   const [config, setConfig] = useState<AnalysisConfig>(() => ({
+    modelProfileId: 'onnx-community/yolov10n',
     confidenceThreshold: 0.22,
     analysisIntervalMs: 70,
     detailLevel: 2,
+    trackingBias: 3,
     scanPreset: 'fast',
     activeZoneId: INITIAL_ZONES[0]?.id ?? null,
     detectionZones: INITIAL_ZONES,
@@ -47,9 +50,11 @@ function App() {
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const analyzerRef = useRef<VehicleAnalyzer | null>(null)
   const configRef = useRef<AnalysisConfig>({
+    modelProfileId: 'onnx-community/yolov10n',
     confidenceThreshold: 0.22,
     analysisIntervalMs: 70,
     detailLevel: 2,
+    trackingBias: 3,
     scanPreset: 'fast',
     activeZoneId: INITIAL_ZONES[0]?.id ?? null,
     detectionZones: INITIAL_ZONES,
@@ -155,7 +160,7 @@ function App() {
     try {
       const analyzer = await initializeAnalyzer(currentConfig)
       analyzerRef.current = analyzer
-      setAnalyzerLabel(`YOLOv10n ${currentConfig.scanPreset}`)
+      setAnalyzerLabel(`${getModelProfile(currentConfig.modelProfileId).label} ${currentConfig.scanPreset}`)
 
       video.currentTime = 0
       sessionStartRef.current = getNowMs()
@@ -379,10 +384,11 @@ function App() {
   function getZoneTracker(zoneId: string) {
     const existing = trackerMapRef.current.get(zoneId)
     if (existing) {
+      existing.updateOptions(resolveTrackerOptions(configRef.current.trackingBias))
       return existing
     }
 
-    const tracker = new VehicleTracker()
+    const tracker = new VehicleTracker(resolveTrackerOptions(configRef.current.trackingBias))
     trackerMapRef.current.set(zoneId, tracker)
     return tracker
   }
@@ -501,6 +507,24 @@ function App() {
 
             <div className="control-grid">
               <label>
+                <span>Model</span>
+                <select
+                  value={config.modelProfileId}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      modelProfileId: event.target.value as AnalysisConfig['modelProfileId'],
+                    }))
+                  }
+                >
+                  {modelProfiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
                 <span>Confidence {config.confidenceThreshold.toFixed(2)}</span>
                 <input
                   type="range"
@@ -549,6 +573,22 @@ function App() {
                 />
               </label>
               <label>
+                <span>Tracking Bias {config.trackingBias}</span>
+                <input
+                  type="range"
+                  min="1"
+                  max="5"
+                  step="1"
+                  value={config.trackingBias}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      trackingBias: Number(event.target.value),
+                    }))
+                  }
+                />
+              </label>
+              <label>
                 <span>Scan Preset</span>
                 <select
                   value={config.scanPreset}
@@ -560,6 +600,8 @@ function App() {
                         event.target.value === 'fast' ? 70 : event.target.value === 'balanced' ? 100 : 130,
                       detailLevel:
                         event.target.value === 'fast' ? 2 : event.target.value === 'balanced' ? 3 : 4,
+                      trackingBias:
+                        event.target.value === 'fast' ? 3 : event.target.value === 'balanced' ? 3 : 2,
                     }))
                   }
                 >
@@ -630,7 +672,8 @@ function App() {
             {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
             <p className="helper-copy">
               Each zone is detected, tracked, and counted separately. Lower scan interval is faster, while higher zone
-              detail helps smaller vehicles in dense highway traffic.
+              detail helps smaller vehicles in dense highway traffic. Lower tracking bias is looser for crowded line
+              crossings, while higher bias is stricter and reduces duplicates. Model changes apply on the next scan.
             </p>
           </div>
 
@@ -770,4 +813,19 @@ function getNowMs() {
 
 function getIsoNow() {
   return new Date().toISOString()
+}
+
+function resolveTrackerOptions(trackingBias: number) {
+  const clampedBias = Math.min(5, Math.max(1, Math.round(trackingBias)))
+  const looseness = (5 - clampedBias) / 4
+
+  return {
+    maxCenterDistance: 0.18 + looseness * 0.1,
+    maxMissedFrames: Math.round(9 + looseness * 9),
+    minVisibleFramesBeforeCounting: 1,
+    exitCountSlack: 0.14 + looseness * 0.16,
+    minIoUForDirectMatch: 0.08 - looseness * 0.05,
+    maxUpwardDrift: 0.02 + looseness * 0.03,
+    countedTrackReleaseDistance: 0.16 - looseness * 0.08,
+  }
 }

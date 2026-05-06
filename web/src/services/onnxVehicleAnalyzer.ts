@@ -1,10 +1,10 @@
 import { AutoModel, AutoProcessor, RawImage, env } from '@huggingface/transformers'
 
+import { getModelProfile } from '../lib/modelProfiles'
 import type { AnalysisConfig, DetectionBox, DetectionRegion, ScanPreset, VehicleClass } from '../types'
 
 import type { VehicleAnalyzer } from './vehicleAnalyzer'
 
-const MODEL_ID = 'onnx-community/yolov10n'
 const VEHICLE_LABELS = new Set<VehicleClass>(['car', 'truck', 'bus', 'motorcycle'])
 
 env.allowLocalModels = true
@@ -31,12 +31,13 @@ export class OnnxVehicleAnalyzer implements VehicleAnalyzer {
 
   async initialize(config: AnalysisConfig) {
     this.updateConfig(config)
-    this.model = await AutoModel.from_pretrained(MODEL_ID, {
+    const profile = getModelProfile(config.modelProfileId)
+    this.model = await AutoModel.from_pretrained(profile.id, {
       local_files_only: true,
       subfolder: 'onnx',
       model_file_name: 'model',
     })
-    this.processor = await AutoProcessor.from_pretrained(MODEL_ID, {
+    this.processor = await AutoProcessor.from_pretrained(profile.id, {
       local_files_only: true,
     })
   }
