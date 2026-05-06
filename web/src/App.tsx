@@ -14,6 +14,7 @@ import {
   type AnalysisSummary,
   type DetectionRegion,
   type DetectionZone,
+  type ModelProfileId,
   type TrackedVehicle,
   type VehicleClass,
   type ZoneSummary,
@@ -37,10 +38,10 @@ function App() {
   const [showRegionEditor, setShowRegionEditor] = useState(false)
   const [config, setConfig] = useState<AnalysisConfig>(() => ({
     modelProfileId: 'onnx-community/yolov10n',
-    confidenceThreshold: 0.22,
-    analysisIntervalMs: 70,
-    detailLevel: 2,
-    trackingBias: 3,
+    confidenceThreshold: 0.16,
+    analysisIntervalMs: 25,
+    detailLevel: 1,
+    trackingBias: 2,
     scanPreset: 'fast',
     activeZoneId: INITIAL_ZONES[0]?.id ?? null,
     detectionZones: INITIAL_ZONES,
@@ -51,10 +52,10 @@ function App() {
   const analyzerRef = useRef<VehicleAnalyzer | null>(null)
   const configRef = useRef<AnalysisConfig>({
     modelProfileId: 'onnx-community/yolov10n',
-    confidenceThreshold: 0.22,
-    analysisIntervalMs: 70,
-    detailLevel: 2,
-    trackingBias: 3,
+    confidenceThreshold: 0.16,
+    analysisIntervalMs: 25,
+    detailLevel: 1,
+    trackingBias: 2,
     scanPreset: 'fast',
     activeZoneId: INITIAL_ZONES[0]?.id ?? null,
     detectionZones: INITIAL_ZONES,
@@ -71,6 +72,7 @@ function App() {
   const overlayFramePendingRef = useRef(false)
   const lastAnalyzedAtRef = useRef(0)
   const lastAnalyzedVideoTimeRef = useRef(-1)
+  const analysisFrameRef = useRef<HTMLCanvasElement | null>(null)
 
   const deferredTracks = useDeferredValue(tracks)
   const deferredCounts = useDeferredValue(counts)
@@ -158,17 +160,25 @@ function App() {
     resetSessionState(currentConfig.detectionZones)
 
     try {
-      const analyzer = await initializeAnalyzer(currentConfig)
-      analyzerRef.current = analyzer
-      setAnalyzerLabel(`${getModelProfile(currentConfig.modelProfileId).label} ${currentConfig.scanPreset}`)
+      const initialized = await initializeAnalyzer(currentConfig)
+      analyzerRef.current = initialized.analyzer
+      if (initialized.config !== currentConfig) {
+        configRef.current = initialized.config
+        setConfig(initialized.config)
+      }
+      setAnalyzerLabel(`${getModelProfile(initialized.config.modelProfileId).label} ${initialized.config.scanPreset}`)
 
       video.currentTime = 0
       sessionStartRef.current = getNowMs()
       isRunningRef.current = true
       analysisInFlightRef.current = false
-      setStatus('Scanning vehicles...')
+      setStatus(
+        initialized.config.modelProfileId === currentConfig.modelProfileId
+          ? 'Scanning vehicles...'
+          : 'Dense model unavailable. Scanning with stable fast model...',
+      )
       await video.play()
-      scheduleNextAnalysisFrame(video, analyzer)
+      scheduleNextAnalysisFrame(video, initialized.analyzer)
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Unable to initialize analyzer.')
       setStatus('Analyzer setup failed')
@@ -196,8 +206,7 @@ function App() {
         continue
       }
 
-      const absoluteLine = getAbsoluteCountingLine(zone)
-      const flush = tracker.flush(absoluteLine)
+      const flush = tracker.flush()
       for (const vehicleClass of flush.newlyCountedClasses) {
         nextZoneCounts[zone.id][vehicleClass] += 1
       }
@@ -333,8 +342,12 @@ function App() {
           const nextZoneCounts = cloneZoneCountMap(zoneCountsRef.current)
           const nextTracks: TrackedVehicle[] = []
 
+          const analyzedVideoTime = video.currentTime
+          const analysisFrame = captureVideoFrame(video, analysisFrameRef.current)
+          analysisFrameRef.current = analysisFrame
+
           for (const zone of currentConfig.detectionZones) {
-            const detections = await analyzer.analyze(video, zone.region)
+            const detections = await analyzer.analyze(analysisFrame, zone.region)
             const tracker = getZoneTracker(zone.id)
             const update = tracker.update(detections, getAbsoluteCountingLine(zone))
 
@@ -353,7 +366,7 @@ function App() {
 
           applyZoneState(nextZoneCounts, nextTracks, currentConfig.detectionZones)
           startTransition(() => {
-            setCurrentTime(video.currentTime)
+            setCurrentTime(analyzedVideoTime)
           })
         } catch (error) {
           setErrorMessage(error instanceof Error ? error.message : 'Analysis failed.')
@@ -597,11 +610,11 @@ function App() {
                       ...current,
                       scanPreset: event.target.value as AnalysisConfig['scanPreset'],
                       analysisIntervalMs:
-                        event.target.value === 'fast' ? 70 : event.target.value === 'balanced' ? 100 : 130,
+                        event.target.value === 'fast' ? 25 : event.target.value === 'balanced' ? 50 : 80,
                       detailLevel:
-                        event.target.value === 'fast' ? 2 : event.target.value === 'balanced' ? 3 : 4,
+                        event.target.value === 'fast' ? 1 : event.target.value === 'balanced' ? 2 : 3,
                       trackingBias:
-                        event.target.value === 'fast' ? 3 : event.target.value === 'balanced' ? 3 : 2,
+                        event.target.value === 'fast' ? 3 : event.target.value === 'balanced' ? 2 : 2,
                     }))
                   }
                 >
@@ -671,9 +684,10 @@ function App() {
 
             {errorMessage ? <p className="error-banner">{errorMessage}</p> : null}
             <p className="helper-copy">
-              Each zone is detected, tracked, and counted separately. Lower scan interval is faster, while higher zone
-              detail helps smaller vehicles in dense highway traffic. Lower tracking bias is looser for crowded line
-              crossings, while higher bias is stricter and reduces duplicates. Model changes apply on the next scan.
+              Each zone is detected, tracked, and counted separately. The scanner briefly holds each analyzed frame so
+              boxes and counts stay synced with the video. Higher zone detail helps smaller vehicles in dense highway
+              traffic. Lower tracking bias is looser for crowded crossings, while higher bias is stricter. If the dense
+              model cannot be parsed by the browser, scanning falls back to the stable fast model.
             </p>
           </div>
 
@@ -712,9 +726,28 @@ export default App
 
 async function initializeAnalyzer(config: AnalysisConfig) {
   const { OnnxVehicleAnalyzer } = await import('./services/onnxVehicleAnalyzer')
-  const analyzer = new OnnxVehicleAnalyzer(config)
-  await analyzer.initialize(config)
-  return analyzer
+  try {
+    const analyzer = new OnnxVehicleAnalyzer(config)
+    await analyzer.initialize(config)
+    return { analyzer, config }
+  } catch (error) {
+    const fallbackConfig = createFallbackModelConfig(config)
+    if (fallbackConfig.modelProfileId === config.modelProfileId) {
+      throw error
+    }
+
+    const analyzer = new OnnxVehicleAnalyzer(fallbackConfig)
+    await analyzer.initialize(fallbackConfig)
+    return { analyzer, config: fallbackConfig }
+  }
+}
+
+function createFallbackModelConfig(config: AnalysisConfig) {
+  const fallbackModelProfileId: ModelProfileId = 'onnx-community/yolov10n'
+  return {
+    ...config,
+    modelProfileId: fallbackModelProfileId,
+  }
 }
 
 function createInitialZones() {
@@ -723,9 +756,9 @@ function createInitialZones() {
 
 function createDefaultZone(index: number): DetectionZone {
   const safeIndex = Math.max(1, index)
-  const left = safeIndex % 2 === 0 ? 0.08 : 0.08
-  const top = safeIndex % 2 === 0 ? 0.08 : 0.2
-  const height = safeIndex % 2 === 0 ? 0.32 : 0.42
+  const left = 0.03
+  const top = 0.05
+  const height = safeIndex % 2 === 0 ? 0.42 : 0.9
 
   return {
     id: `zone-${safeIndex}-${Math.random().toString(36).slice(2, 7)}`,
@@ -733,10 +766,10 @@ function createDefaultZone(index: number): DetectionZone {
     region: {
       left,
       top,
-      width: 0.84,
+      width: 0.94,
       height,
     },
-    countingLineOffset: 0.52,
+    countingLineOffset: safeIndex % 2 === 0 ? 0.52 : 0.62,
   }
 }
 
@@ -815,17 +848,40 @@ function getIsoNow() {
   return new Date().toISOString()
 }
 
+function captureVideoFrame(video: HTMLVideoElement, reusableCanvas: HTMLCanvasElement | null) {
+  const width = video.videoWidth
+  const height = video.videoHeight
+  if (!width || !height) {
+    throw new Error('Video frame is not ready yet.')
+  }
+
+  const canvas = reusableCanvas ?? document.createElement('canvas')
+  if (canvas.width !== width) {
+    canvas.width = width
+  }
+  if (canvas.height !== height) {
+    canvas.height = height
+  }
+
+  const context = canvas.getContext('2d')
+  if (!context) {
+    throw new Error('Unable to capture the current video frame.')
+  }
+
+  context.drawImage(video, 0, 0, width, height)
+  return canvas
+}
+
 function resolveTrackerOptions(trackingBias: number) {
   const clampedBias = Math.min(5, Math.max(1, Math.round(trackingBias)))
   const looseness = (5 - clampedBias) / 4
 
   return {
-    maxCenterDistance: 0.18 + looseness * 0.1,
-    maxMissedFrames: Math.round(9 + looseness * 9),
-    minVisibleFramesBeforeCounting: 1,
-    exitCountSlack: 0.14 + looseness * 0.16,
+    maxCenterDistance: 0.22 + looseness * 0.14,
+    maxMissedFrames: Math.round(14 + looseness * 12),
+    minVisibleFramesBeforeCounting: 3,
+    exitCountSlack: 0.16 + looseness * 0.16,
     minIoUForDirectMatch: 0.08 - looseness * 0.05,
-    maxUpwardDrift: 0.02 + looseness * 0.03,
-    countedTrackReleaseDistance: 0.16 - looseness * 0.08,
+    countedTrackReleaseDistance: 0.14 - looseness * 0.06,
   }
 }

@@ -42,6 +42,8 @@ export interface TrackedVehicle {
   framesVisible: number
   missedFrames: number
   framesSinceCounted: number
+  velocityX: number
+  velocityY: number
   previousCenterY: number
   previousBottomY: number
   maxBottomY: number

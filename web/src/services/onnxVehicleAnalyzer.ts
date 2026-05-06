@@ -233,11 +233,17 @@ function mergeTileDetections(detections: DetectionBox[], preset: ScanPreset, det
 
     for (let index = sorted.length - 1; index >= 0; index -= 1) {
       const candidate = sorted[index]
-      if (!candidate || candidate.vehicleClass !== current.vehicleClass) {
+      if (!candidate) {
         continue
       }
 
-      if (intersectionOverUnion(current, candidate) >= iouThreshold) {
+      const overlap = intersectionOverUnion(current, candidate)
+      const isSameVehicle =
+        candidate.vehicleClass === current.vehicleClass
+          ? overlap >= iouThreshold
+          : overlap >= Math.max(0.72, iouThreshold + 0.12)
+
+      if (isSameVehicle) {
         sorted.splice(index, 1)
       }
     }

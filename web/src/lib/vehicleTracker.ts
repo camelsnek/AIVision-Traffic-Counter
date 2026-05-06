@@ -11,13 +11,19 @@ interface MatchCandidate {
   score: number
 }
 
+interface CountedFootprint {
+  trackId: number
+  boundingBox: DetectionBox
+  vehicleClass: TrackedVehicle['vehicleClass']
+  ttl: number
+}
+
 interface VehicleTrackerOptions {
   maxCenterDistance?: number
   maxMissedFrames?: number
   minVisibleFramesBeforeCounting?: number
   exitCountSlack?: number
   minIoUForDirectMatch?: number
-  maxUpwardDrift?: number
   countedTrackReleaseDistance?: number
 }
 
@@ -27,7 +33,6 @@ interface ResolvedVehicleTrackerOptions {
   minVisibleFramesBeforeCounting: number
   exitCountSlack: number
   minIoUForDirectMatch: number
-  maxUpwardDrift: number
   countedTrackReleaseDistance: number
 }
 
@@ -35,6 +40,7 @@ export class VehicleTracker {
   private options: ResolvedVehicleTrackerOptions
   private nextTrackId = 1
   private tracks = new Map<number, TrackedVehicle>()
+  private countedFootprints: CountedFootprint[] = []
 
   constructor(options: VehicleTrackerOptions = {}) {
     this.options = resolveOptions(options)
@@ -43,6 +49,7 @@ export class VehicleTracker {
   reset() {
     this.nextTrackId = 1
     this.tracks.clear()
+    this.countedFootprints = []
   }
 
   updateOptions(options: VehicleTrackerOptions) {
@@ -50,16 +57,17 @@ export class VehicleTracker {
   }
 
   update(detections: DetectionBox[], countingLinePosition: number): TrackingUpdate {
+    this.decayCountedFootprints()
+    const normalizedDetections = suppressDuplicateDetections(detections)
     const updatedTracks = new Map<number, TrackedVehicle>()
     const newlyCountedClasses: TrackedVehicle['vehicleClass'][] = []
     const matchedTrackIds = new Set<number>()
     const matchedDetectionIndexes = new Set<number>()
     const matchCandidates = buildMatchCandidates({
       tracks: [...this.tracks.values()],
-      detections,
+      detections: normalizedDetections,
       maxCenterDistance: this.options.maxCenterDistance,
       minIoUForDirectMatch: this.options.minIoUForDirectMatch,
-      maxUpwardDrift: this.options.maxUpwardDrift,
     })
 
     for (const candidate of matchCandidates) {
@@ -68,7 +76,7 @@ export class VehicleTracker {
       }
 
       const previous = this.tracks.get(candidate.trackId)
-      const detection = detections[candidate.detectionIndex]
+      const detection = normalizedDetections[candidate.detectionIndex]
       if (!previous || !detection) {
         continue
       }
@@ -77,37 +85,53 @@ export class VehicleTracker {
       matchedDetectionIndexes.add(candidate.detectionIndex)
 
       const currentCenterY = detection.top + detection.height / 2
+      const currentCenterX = detection.left + detection.width / 2
+      const previousCenterX = previous.boundingBox.left + previous.boundingBox.width / 2
       const currentBottomY = detection.top + detection.height
       const crossedLine =
         previous.previousBottomY < countingLinePosition &&
         currentBottomY >= countingLinePosition &&
         previous.framesVisible + 1 >= this.options.minVisibleFramesBeforeCounting
 
-      const counted = previous.counted || crossedLine
       const vehicleClass = detection.confidence >= previous.maxConfidence ? detection.vehicleClass : previous.vehicleClass
       const confidence = Math.max(previous.confidence, detection.confidence)
-
-      if (!previous.counted && crossedLine) {
-        newlyCountedClasses.push(vehicleClass)
-      }
-
-      updatedTracks.set(candidate.trackId, {
+      const updatedTrack: TrackedVehicle = {
         trackId: candidate.trackId,
         vehicleClass,
         confidence,
         boundingBox: detection,
         framesVisible: previous.framesVisible + 1,
         missedFrames: 0,
-        framesSinceCounted: counted ? previous.framesSinceCounted + 1 : 0,
+        framesSinceCounted: previous.counted ? previous.framesSinceCounted + 1 : 0,
+        velocityX: smoothVelocity(previous.velocityX, currentCenterX - previousCenterX),
+        velocityY: smoothVelocity(previous.velocityY, currentCenterY - previous.previousCenterY),
         previousCenterY: currentCenterY,
         previousBottomY: currentBottomY,
         maxBottomY: Math.max(previous.maxBottomY, currentBottomY),
         maxConfidence: Math.max(previous.maxConfidence, detection.confidence),
-        counted,
+        counted: previous.counted,
+      }
+      const shouldCount =
+        !previous.counted &&
+        (crossedLine || isStableVehicleTrack(updatedTrack)) &&
+        !this.matchesRecentlyCounted(updatedTrack)
+
+      if (shouldCount) {
+        newlyCountedClasses.push(vehicleClass)
+        this.rememberCountedFootprint(updatedTrack)
+      }
+      if (previous.counted) {
+        this.rememberCountedFootprint(updatedTrack)
+      }
+
+      updatedTracks.set(candidate.trackId, {
+        ...updatedTrack,
+        counted: previous.counted || shouldCount,
+        framesSinceCounted: previous.counted || shouldCount ? previous.framesSinceCounted + 1 : 0,
       })
     }
 
-    detections.forEach((detection, detectionIndex) => {
+    normalizedDetections.forEach((detection, detectionIndex) => {
       if (matchedDetectionIndexes.has(detectionIndex)) {
         return
       }
@@ -124,6 +148,8 @@ export class VehicleTracker {
         framesVisible: 1,
         missedFrames: 0,
         framesSinceCounted: 0,
+        velocityX: 0,
+        velocityY: 0,
         previousCenterY: currentCenterY,
         previousBottomY: currentBottomY,
         maxBottomY: currentBottomY,
@@ -139,22 +165,15 @@ export class VehicleTracker {
 
       const missedFrames = previous.missedFrames + 1
       if (missedFrames > this.options.maxMissedFrames) {
-        if (shouldCountOnExit(previous, countingLinePosition, this.options.minVisibleFramesBeforeCounting, this.options.exitCountSlack)) {
+        if (shouldCountOnExit(previous, this.options.minVisibleFramesBeforeCounting) && !this.matchesRecentlyCounted(previous)) {
           newlyCountedClasses.push(previous.vehicleClass)
+          this.rememberCountedFootprint(previous)
         }
         continue
       }
 
-      if (
-        previous.counted &&
-        previous.maxBottomY >= countingLinePosition + this.options.countedTrackReleaseDistance &&
-        missedFrames >= 2
-      ) {
-        continue
-      }
-
       updatedTracks.set(trackId, {
-        ...previous,
+        ...advancePredictedTrack(previous),
         missedFrames,
         framesSinceCounted: previous.counted ? previous.framesSinceCounted + 1 : previous.framesSinceCounted,
       })
@@ -163,37 +182,117 @@ export class VehicleTracker {
     this.tracks = updatedTracks
 
     return {
-      activeTracks: [...updatedTracks.values()].sort((left, right) => left.trackId - right.trackId),
+      activeTracks: visibleTracks(updatedTracks),
       newlyCountedClasses,
     }
   }
 
-  flush(countingLinePosition: number): TrackingUpdate {
+  flush(): TrackingUpdate {
     const newlyCountedClasses: TrackedVehicle['vehicleClass'][] = []
 
     for (const track of this.tracks.values()) {
-      if (shouldCountOnExit(track, countingLinePosition, this.options.minVisibleFramesBeforeCounting, this.options.exitCountSlack)) {
+      if (shouldCountOnExit(track, this.options.minVisibleFramesBeforeCounting) && !this.matchesRecentlyCounted(track)) {
         newlyCountedClasses.push(track.vehicleClass)
       }
     }
 
     this.tracks.clear()
+    this.countedFootprints = []
 
     return {
       activeTracks: [],
       newlyCountedClasses,
     }
   }
+
+  private decayCountedFootprints() {
+    this.countedFootprints = this.countedFootprints
+      .map((entry) => ({ ...entry, ttl: entry.ttl - 1 }))
+      .filter((entry) => entry.ttl > 0)
+  }
+
+  private rememberCountedFootprint(track: TrackedVehicle) {
+    this.countedFootprints = this.countedFootprints.filter((entry) => entry.trackId !== track.trackId)
+    this.countedFootprints.push({
+      trackId: track.trackId,
+      boundingBox: track.boundingBox,
+      vehicleClass: track.vehicleClass,
+      ttl: 32,
+    })
+  }
+
+  private matchesRecentlyCounted(track: TrackedVehicle) {
+    return this.countedFootprints.some((entry) => {
+      if (entry.vehicleClass !== track.vehicleClass) {
+        return false
+      }
+
+      const iou = intersectionOverUnion(entry.boundingBox, track.boundingBox)
+      const distance = centerDistance(entry.boundingBox, track.boundingBox)
+      return iou >= 0.12 || distance <= this.options.maxCenterDistance * 0.75
+    })
+  }
+}
+
+function suppressDuplicateDetections(detections: DetectionBox[]) {
+  const sorted = [...detections].sort((left, right) => right.confidence - left.confidence)
+  const kept: DetectionBox[] = []
+
+  for (const detection of sorted) {
+    const duplicatesExisting = kept.some((existing) => areDuplicateDetections(existing, detection))
+    if (!duplicatesExisting) {
+      kept.push(detection)
+    }
+  }
+
+  return kept
+}
+
+function areDuplicateDetections(left: DetectionBox, right: DetectionBox) {
+  const iou = intersectionOverUnion(left, right)
+  const sameClass = left.vehicleClass === right.vehicleClass
+  if (!sameClass && iou < 0.62) {
+    return false
+  }
+
+  if (iou >= 0.38) {
+    return true
+  }
+
+  const distance = centerDistance(left, right)
+  const sizeScale = Math.max(
+    0.025,
+    Math.min(left.width, right.width) * 0.45 + Math.min(left.height, right.height) * 0.45,
+  )
+  if (distance > sizeScale) {
+    return false
+  }
+
+  return containmentRatio(left, right) >= 0.55 || containmentRatio(right, left) >= 0.55
+}
+
+function containmentRatio(inner: DetectionBox, outer: DetectionBox) {
+  const overlapLeft = Math.max(inner.left, outer.left)
+  const overlapTop = Math.max(inner.top, outer.top)
+  const overlapRight = Math.min(inner.left + inner.width, outer.left + outer.width)
+  const overlapBottom = Math.min(inner.top + inner.height, outer.top + outer.height)
+
+  if (overlapRight <= overlapLeft || overlapBottom <= overlapTop) {
+    return 0
+  }
+
+  const intersection = (overlapRight - overlapLeft) * (overlapBottom - overlapTop)
+  const innerArea = detectionArea(inner)
+  return innerArea > 0 ? intersection / innerArea : 0
 }
 
 function resolveOptions(options: VehicleTrackerOptions): ResolvedVehicleTrackerOptions {
   return {
     maxCenterDistance: options.maxCenterDistance ?? 0.22,
     maxMissedFrames: options.maxMissedFrames ?? 14,
-    minVisibleFramesBeforeCounting: options.minVisibleFramesBeforeCounting ?? 1,
+    minVisibleFramesBeforeCounting: options.minVisibleFramesBeforeCounting ?? 3,
     exitCountSlack: options.exitCountSlack ?? 0.22,
     minIoUForDirectMatch: options.minIoUForDirectMatch ?? 0.05,
-    maxUpwardDrift: options.maxUpwardDrift ?? 0.035,
     countedTrackReleaseDistance: options.countedTrackReleaseDistance ?? 0.12,
   }
 }
@@ -203,35 +302,28 @@ function buildMatchCandidates({
   detections,
   maxCenterDistance,
   minIoUForDirectMatch,
-  maxUpwardDrift,
 }: {
   tracks: TrackedVehicle[]
   detections: DetectionBox[]
   maxCenterDistance: number
   minIoUForDirectMatch: number
-  maxUpwardDrift: number
 }) {
   const candidates: MatchCandidate[] = []
 
   for (const track of tracks) {
+    const predictedTrackBox = predictBoundingBox(track)
     for (const [detectionIndex, detection] of detections.entries()) {
-      const iou = intersectionOverUnion(track.boundingBox, detection)
-      const distance = centerDistance(track.boundingBox, detection)
-      const currentBottomY = detection.top + detection.height
-      const upwardDrift = track.previousBottomY - currentBottomY
+      const iou = intersectionOverUnion(predictedTrackBox, detection)
+      const distance = centerDistance(predictedTrackBox, detection)
       const sameClassBonus = track.vehicleClass === detection.vehicleClass ? 0.08 : 0
-      const countedTrackPenalty = track.counted ? 0.08 : 0
-
-      if (upwardDrift > maxUpwardDrift) {
-        continue
-      }
+      const countedTrackPenalty = track.counted ? 0.03 : 0
 
       if (iou < minIoUForDirectMatch && distance > maxCenterDistance) {
         continue
       }
 
       const distanceScore = Math.max(0, 1 - distance / maxCenterDistance)
-      const score = iou * 0.72 + distanceScore * 0.2 + sameClassBonus - countedTrackPenalty
+      const score = iou * 0.78 + distanceScore * 0.2 + sameClassBonus - countedTrackPenalty
 
       candidates.push({
         trackId: track.trackId,
@@ -246,16 +338,63 @@ function buildMatchCandidates({
 
 function shouldCountOnExit(
   track: TrackedVehicle,
-  countingLinePosition: number,
   minVisibleFramesBeforeCounting: number,
-  exitCountSlack: number,
 ) {
   return (
     !track.counted &&
     track.framesVisible >= minVisibleFramesBeforeCounting &&
-    track.maxBottomY >= countingLinePosition - exitCountSlack &&
-    track.maxConfidence >= 0.24
+    track.maxConfidence >= 0.18 &&
+    detectionArea(track.boundingBox) >= 0.00025
   )
+}
+
+function isStableVehicleTrack(track: TrackedVehicle) {
+  return (
+    track.framesVisible >= 3 &&
+    track.maxConfidence >= 0.18 &&
+    (track.maxConfidence >= 0.24 || detectionArea(track.boundingBox) >= 0.00035)
+  )
+}
+
+function smoothVelocity(previousVelocity: number, nextVelocity: number) {
+  return previousVelocity * 0.55 + nextVelocity * 0.45
+}
+
+function predictBoundingBox(track: TrackedVehicle) {
+  const steps = Math.min(track.missedFrames + 1, 4)
+  return shiftBoundingBox(track.boundingBox, track.velocityX * steps, track.velocityY * steps)
+}
+
+function advancePredictedTrack(track: TrackedVehicle) {
+  return {
+    ...track,
+    boundingBox: predictBoundingBox(track),
+    previousCenterY: track.previousCenterY + track.velocityY,
+    previousBottomY: track.previousBottomY + track.velocityY,
+    maxBottomY: Math.max(track.maxBottomY, track.previousBottomY + track.velocityY),
+  }
+}
+
+function shiftBoundingBox(detection: DetectionBox, dx: number, dy: number) {
+  return {
+    ...detection,
+    left: clamp01(detection.left + dx),
+    top: clamp01(detection.top + dy),
+  }
+}
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value))
+}
+
+function detectionArea(detection: DetectionBox) {
+  return detection.width * detection.height
+}
+
+function visibleTracks(tracks: Map<number, TrackedVehicle>) {
+  return [...tracks.values()]
+    .filter((track) => track.missedFrames === 0)
+    .sort((left, right) => left.trackId - right.trackId)
 }
 
 function centerDistance(left: DetectionBox, right: DetectionBox) {
