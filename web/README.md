@@ -7,7 +7,7 @@ No video is uploaded to a server.
 ## What it does
 
 - Runs local YOLOv10-N or YOLOv10-M ONNX models through Transformers.js.
-- Uses WebGPU when available and a reliable single-threaded WASM fallback otherwise.
+- Lets the user select Auto, GPU/WebGPU, or CPU/WebAssembly inference.
 - Samples uploaded videos by video timestamp, so results do not depend on playback speed or machine performance.
 - Tracks tentative and confirmed vehicles through brief detection gaps.
 - Counts line crossings in both screen directions exactly once per vehicle and zone.
@@ -29,7 +29,15 @@ npm run dev
 
 `predev` copies the ONNX Runtime assets matching the installed Transformers.js version into `vendor/ort/`. Open the printed local URL, choose a road video, adjust zones if needed, and select **Start analysis**.
 
-For the fastest inference, use a browser with WebGPU enabled. The app automatically falls back to WASM when WebGPU is unavailable.
+## Performance controls
+
+- **Auto — prefer GPU** is the default. It uses WebGPU when a high-performance adapter is available and falls back to CPU/WASM if GPU session creation fails.
+- **GPU — WebGPU** requires a current browser and working hardware acceleration. The option is marked unavailable when the browser cannot obtain an adapter. An explicit GPU choice never silently runs on the CPU.
+- **CPU — WebAssembly** uses the quantized model in the most compatible single-threaded runtime. It is reliable but normally slower.
+- **YOLOv10-N** is the performance-oriented model; YOLOv10-M is substantially heavier.
+- **Sampling rate** controls how many video timestamps are analyzed. Reducing it from 10 to 5 fps roughly halves the number of inference calls and usually the total analysis time. It does not make an individual model call faster.
+
+The live `fps` metric is analyzed frames per wall-clock second and includes video seeking, frame preparation, inference, tracking, and rendering. `ms/frame` measures detector work only. Large or highly compressed 4K videos can therefore show lower overall fps even when GPU inference itself is fast.
 
 ## Validation
 

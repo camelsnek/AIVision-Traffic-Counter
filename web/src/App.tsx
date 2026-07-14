@@ -79,7 +79,9 @@ export default function App() {
           <ConfigPanel
             config={analysis.config}
             disabled={busy}
+            gpuAvailable={analysis.gpuAvailable}
             setModelProfile={analysis.setModelProfile}
+            setEnginePreference={analysis.setEnginePreference}
             setConfidence={analysis.setConfidence}
             setSamplingFps={analysis.setSamplingFps}
           />

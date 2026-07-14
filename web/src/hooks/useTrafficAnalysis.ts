@@ -11,6 +11,7 @@ import type {
   CountEvent,
   CountingZone,
   EngineInfo,
+  EnginePreference,
   ModelProfileId,
   RectNorm,
   SessionCounts,
@@ -45,9 +46,11 @@ export interface TrafficAnalysis {
   status: AnalysisStatus
   error: string | null
   engine: EngineInfo | null
+  gpuAvailable: boolean | null
 
   config: AnalysisConfig
   setModelProfile(modelProfileId: ModelProfileId): void
+  setEnginePreference(preference: EnginePreference): void
   setConfidence(confidence: number): void
   setSamplingFps(samplingFps: number): void
 
@@ -82,8 +85,11 @@ const INITIAL_PROGRESS: AnalysisProgress = {
   throughputFps: 0,
 }
 
+const MAX_OVERLAY_EDGE = 1600
+
 const DEFAULT_CONFIG: AnalysisConfig = {
   modelProfileId: 'onnx-community/yolov10n',
+  enginePreference: 'auto',
   confidence: 0.35,
   samplingFps: 10,
   zones: [],
@@ -94,7 +100,7 @@ export function useTrafficAnalysis(): TrafficAnalysis {
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const objectUrlRef = useRef<string | null>(null)
   const processorRef = useRef<VideoProcessor | null>(null)
-  const detectorCacheRef = useRef(new Map<ModelProfileId, VehicleDetector>())
+  const detectorRef = useRef<{ key: string; detector: VehicleDetector } | null>(null)
   const tracksRef = useRef<TrackSnapshot[]>([])
   const eventsRef = useRef<CountEvent[]>([])
   const nextZoneNumberRef = useRef(2)
@@ -105,6 +111,7 @@ export function useTrafficAnalysis(): TrafficAnalysis {
   const [status, setStatus] = useState<AnalysisStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [engine, setEngine] = useState<EngineInfo | null>(null)
+  const [gpuAvailable, setGpuAvailable] = useState<boolean | null>(null)
   const [config, setConfig] = useState<AnalysisConfig>(() => ({
     ...DEFAULT_CONFIG,
     zones: [createZone(1)],
@@ -142,8 +149,21 @@ export function useTrafficAnalysis(): TrafficAnalysis {
   }, [redrawOverlay, counts, zoneEditing, status, videoSize])
 
   useEffect(() => {
+    let active = true
+    void VehicleDetector.supportsWebGpu().then((available) => {
+      if (active) {
+        setGpuAvailable(available)
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
     return () => {
       processorRef.current?.stop()
+      void detectorRef.current?.detector.dispose()
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current)
       }
@@ -175,8 +195,9 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     const applySize = () => {
       const overlay = overlayRef.current
       if (overlay && video.videoWidth && video.videoHeight) {
-        overlay.width = video.videoWidth
-        overlay.height = video.videoHeight
+        const scale = Math.min(1, MAX_OVERLAY_EDGE / Math.max(video.videoWidth, video.videoHeight))
+        overlay.width = Math.max(1, Math.round(video.videoWidth * scale))
+        overlay.height = Math.max(1, Math.round(video.videoHeight * scale))
       }
       setVideoSize(video.videoWidth ? { width: video.videoWidth, height: video.videoHeight } : null)
     }
@@ -223,11 +244,17 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     setZoneEditing(false)
     setStatus('loading')
 
-    let detector = detectorCacheRef.current.get(config.modelProfileId)
+    const detectorKey = `${config.modelProfileId}:${config.enginePreference}`
+    const currentDetector = detectorRef.current
+    let detector = currentDetector?.key === detectorKey ? currentDetector.detector : null
     if (!detector) {
       try {
-        detector = await VehicleDetector.create(config.modelProfileId)
-        detectorCacheRef.current.set(config.modelProfileId, detector)
+        if (currentDetector) {
+          await currentDetector.detector.dispose()
+          detectorRef.current = null
+        }
+        detector = await VehicleDetector.create(config.modelProfileId, config.enginePreference)
+        detectorRef.current = { key: detectorKey, detector }
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : 'The detection model could not be loaded.')
         setStatus('error')
@@ -295,7 +322,13 @@ export function useTrafficAnalysis(): TrafficAnalysis {
   }, [clearSession, videoUrl])
 
   const setModelProfile = useCallback((modelProfileId: ModelProfileId) => {
+    setEngine(null)
     setConfig((current) => ({ ...current, modelProfileId }))
+  }, [])
+
+  const setEnginePreference = useCallback((enginePreference: EnginePreference) => {
+    setEngine(null)
+    setConfig((current) => ({ ...current, enginePreference }))
   }, [])
 
   const setConfidence = useCallback((confidence: number) => {
@@ -353,8 +386,10 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     status,
     error,
     engine,
+    gpuAvailable,
     config,
     setModelProfile,
+    setEnginePreference,
     setConfidence,
     setSamplingFps,
     zoneEditing,

@@ -31,9 +31,10 @@ This application adds the state required for useful counting:
 2. The script installs a supported Node.js LTS release when necessary, installs exact npm dependencies, prepares local ONNX Runtime assets, starts Vite, and opens the app.
 3. Drop an MP4, MOV, or WebM traffic video onto the video stage.
 4. Select **Edit zones** and show that the detection region and counting line can be moved.
-5. Explain the two main controls:
+5. Explain the three main performance and quality controls:
+   - **Processing device** chooses Auto, GPU/WebGPU, or CPU/WebAssembly.
    - **Confidence** balances recall against false detections.
-   - **Sampling rate** balances temporal detail against analysis time.
+   - **Sampling rate** balances temporal detail against total analysis time.
 6. Select **Start analysis**.
 7. Point out confirmed tracks, trails, vehicle classes, line crossings, and direction totals.
 8. Show the session totals, per-zone breakdown, and five-second traffic-flow chart.
@@ -63,7 +64,7 @@ The video remains on the user's machine. Model inference and result generation h
 | Build | Vite 8 | Development server and production build |
 | Detection | YOLOv10-N / YOLOv10-M | Vehicle bounding boxes and COCO class labels |
 | Model runtime | Transformers.js + ONNX Runtime Web | Local browser inference |
-| Acceleration | WebGPU, with WASM fallback | Hardware acceleration and broad compatibility |
+| Acceleration | User-selectable Auto, GPU/WebGPU, or CPU/WASM | Hardware acceleration and compatible fallback |
 | Tracking | Custom SORT-like tracker | Detection association, confirmation, and gap recovery |
 | Rendering | HTML video + Canvas 2D | Synchronized boxes, trails, zones, and lines |
 | Testing | Vitest + ESLint + TypeScript | Behavioral contracts and static verification |

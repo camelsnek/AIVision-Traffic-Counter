@@ -7,7 +7,7 @@ export interface SessionExport {
   durationSeconds: number
   processedAt: string
   engine: EngineInfo | null
-  config: Pick<AnalysisConfig, 'confidence' | 'samplingFps'>
+  config: Pick<AnalysisConfig, 'enginePreference' | 'confidence' | 'samplingFps'>
   zones: CountingZone[]
   counts: SessionCounts
   events: CountEvent[]
@@ -70,6 +70,7 @@ export function buildSessionExport(input: {
     processedAt: new Date().toISOString(),
     engine: input.engine,
     config: {
+      enginePreference: input.config.enginePreference,
       confidence: input.config.confidence,
       samplingFps: input.config.samplingFps,
     },

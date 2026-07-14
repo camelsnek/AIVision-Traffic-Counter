@@ -8,7 +8,7 @@ The maintained, runnable product is the React + Vite application under [`web/`](
 
 - analyzes local video without uploading it;
 - runs local YOLOv10 ONNX models through Transformers.js;
-- selects WebGPU when available and falls back to WebAssembly;
+- provides explicit Auto, GPU/WebGPU, and CPU/WebAssembly inference controls;
 - deterministically samples by video time instead of playback timing;
 - tracks vehicles through short detection gaps;
 - counts confirmed tracks only when they cross an editable zone line;

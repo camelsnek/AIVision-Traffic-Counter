@@ -50,7 +50,8 @@ export function TopBar({ status, engine, progress }: TopBarProps) {
         )}
         {engine !== null && (
           <span className="chip chip-engine">
-            {getModelProfile(engine.modelProfileId).label} · {engine.device.toUpperCase()} · {engine.dtype}
+            {getModelProfile(engine.modelProfileId).label} · {engine.device === 'webgpu' ? 'GPU' : 'CPU'} ·{' '}
+            {engine.dtype}
           </span>
         )}
         <span className="chip chip-status" role="status" data-status={status}>

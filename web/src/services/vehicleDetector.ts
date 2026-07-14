@@ -7,7 +7,15 @@ import ortPlainMjsUrl from '../../vendor/ort/ort-wasm-simd-threaded.mjs?url'
 import ortPlainWasmUrl from '../../vendor/ort/ort-wasm-simd-threaded.wasm?url'
 import { clamp01, intersectionOverUnion } from '../lib/geometry'
 import { getModelProfile } from '../lib/modelProfiles'
-import type { Detection, EngineDevice, EngineInfo, ModelProfileId, RectNorm, VehicleClass } from '../types'
+import type {
+  Detection,
+  EngineDevice,
+  EngineInfo,
+  EnginePreference,
+  ModelProfileId,
+  RectNorm,
+  VehicleClass,
+} from '../types'
 
 const VEHICLE_LABELS: Record<string, VehicleClass> = {
   car: 'car',
@@ -16,8 +24,8 @@ const VEHICLE_LABELS: Record<string, VehicleClass> = {
   motorcycle: 'motorcycle',
 }
 
-/** Longest edge of the ROI crop handed to the processor; it resizes to 640 anyway. */
-const MAX_CROP_EDGE = 1280
+/** The processor's model input has a 640px longest edge; larger crops only add readback work. */
+const MAX_CROP_EDGE = 640
 /** Same-class boxes above this IoU are duplicates of one object. */
 const SAME_CLASS_IOU = 0.6
 /** Any-class boxes above this IoU are one object detected as two classes. */
@@ -38,13 +46,21 @@ if (env.backends.onnx?.wasm) {
   env.backends.onnx.wasm.wasmPaths = isSafari
     ? { mjs: ortPlainMjsUrl, wasm: ortPlainWasmUrl }
     : { mjs: ortAsyncifyMjsUrl, wasm: ortAsyncifyWasmUrl }
+  // ORT environment flags must be stable before the first GPU or CPU session.
+  // Single-thread, no proxy worker avoids the ESM worker bootstrap crash seen
+  // in browsers where Emscripten's worker checks misdetect the environment.
+  env.backends.onnx.wasm.proxy = false
+  env.backends.onnx.wasm.numThreads = 1
+}
+if (env.backends.onnx?.webgpu) {
+  env.backends.onnx.webgpu.powerPreference = 'high-performance'
 }
 
 /**
  * Single-pass YOLOv10 vehicle detector.
  *
- * Runs on WebGPU when the browser exposes an adapter, otherwise on
- * (threaded, proxied) WASM with the quantized model when one is available.
+ * Auto mode prefers WebGPU and falls back to quantized WASM. Explicit GPU
+ * and CPU choices are honored without silently changing hardware.
  */
 export class VehicleDetector {
   readonly info: EngineInfo
@@ -61,19 +77,30 @@ export class VehicleDetector {
     this.labelById = readLabelMap(model.config)
   }
 
-  static async create(modelProfileId: ModelProfileId): Promise<VehicleDetector> {
+  static supportsWebGpu(): Promise<boolean> {
+    return supportsWebGpu()
+  }
+
+  static async create(
+    modelProfileId: ModelProfileId,
+    preference: EnginePreference = 'auto',
+  ): Promise<VehicleDetector> {
     const profile = getModelProfile(modelProfileId)
-    const preferred = await resolveDevice()
+    const preferred = await resolveDevice(preference)
 
     try {
       return await VehicleDetector.load(profile.id, preferred, profile.hasQuantized)
     } catch (error) {
-      if (preferred === 'wasm') {
+      if (preference !== 'auto' || preferred === 'wasm') {
         throw error
       }
-      // WebGPU adapters can exist yet fail session creation; WASM is the safety net.
+      // Auto mode alone may fall back when an adapter exists but session creation fails.
       return VehicleDetector.load(profile.id, 'wasm', profile.hasQuantized)
     }
+  }
+
+  async dispose(): Promise<void> {
+    await this.model.dispose()
   }
 
   private static async load(
@@ -81,17 +108,7 @@ export class VehicleDetector {
     device: EngineDevice,
     hasQuantized: boolean,
   ): Promise<VehicleDetector> {
-    const wasmEnv = env.backends.onnx?.wasm
-    if (device === 'wasm' && wasmEnv) {
-      // Single-thread, no proxy worker: the ORT ESM bundle misdetects module
-      // workers in some environments (Emscripten checks `importScripts`) and
-      // crashes with "document is not defined" in both the proxy worker and
-      // pthread workers. ORT latches its wasm init globally on first use, so
-      // this cannot be retried after a failure — pick the profile that works
-      // everywhere. WebGPU remains the fast path.
-      wasmEnv.proxy = false
-      wasmEnv.numThreads = 1
-    }
+    // WebGPU uses FP32; WASM uses the quantized weights when the profile has them.
 
     const dtype = device === 'wasm' && hasQuantized ? 'q8' : 'fp32'
     const model = await withTimeout(
@@ -146,6 +163,7 @@ export class VehicleDetector {
     const image = RawImage.fromCanvas(this.cropCanvas)
     const processed = await this.processor(image)
     const outputs = await this.model({ images: processed.pixel_values })
+    processed.pixel_values.dispose()
     const output0 = 'output0' in outputs ? outputs.output0 : null
     if (!(output0 instanceof Tensor)) {
       throw new Error('The YOLO model returned an unexpected output.')
@@ -210,13 +228,31 @@ export class VehicleDetector {
   }
 }
 
-async function resolveDevice(): Promise<EngineDevice> {
-  try {
-    const adapter = await navigator.gpu?.requestAdapter()
-    return adapter ? 'webgpu' : 'wasm'
-  } catch {
+let webGpuAvailability: Promise<boolean> | null = null
+
+function supportsWebGpu(): Promise<boolean> {
+  webGpuAvailability ??= (async () => {
+    try {
+      return Boolean(await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' }))
+    } catch {
+      return false
+    }
+  })()
+  return webGpuAvailability
+}
+
+async function resolveDevice(preference: EnginePreference): Promise<EngineDevice> {
+  if (preference === 'cpu') {
     return 'wasm'
   }
+
+  const gpuAvailable = await supportsWebGpu()
+  if (preference === 'gpu' && !gpuAvailable) {
+    throw new Error(
+      'GPU inference is unavailable. Use a current Chrome or Edge build with hardware acceleration, or choose Auto/CPU.',
+    )
+  }
+  return gpuAvailable ? 'webgpu' : 'wasm'
 }
 
 function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {

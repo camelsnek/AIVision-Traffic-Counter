@@ -31,9 +31,10 @@ Aplikace proto doplňuje stav a pravidla nutná pro skutečné sčítání dopra
 2. Skript podle potřeby nainstaluje podporovanou LTS verzi Node.js, nainstaluje přesné npm závislosti, připraví lokální soubory ONNX Runtime, spustí Vite a otevře aplikaci.
 3. Přetáhněte dopravní video ve formátu MP4, MOV nebo WebM do prostoru videa.
 4. Zvolte **Edit zones** a ukažte, že lze měnit polohu i velikost detekční oblasti a posouvat sčítací čáru.
-5. Vysvětlete dvě hlavní nastavení:
+5. Vysvětlete tři hlavní ovladače výkonu a kvality:
+   - **Processing device** volí automatický režim, GPU/WebGPU nebo CPU/WebAssembly.
    - **Confidence** vyvažuje počet zachycených vozidel proti chybným detekcím.
-   - **Sampling rate** vyvažuje časové rozlišení proti délce analýzy.
+   - **Sampling rate** vyvažuje časové rozlišení proti celkové délce analýzy.
 6. Zvolte **Start analysis**.
 7. Ukažte potvrzené stopy, trajektorie, třídy vozidel, překročení čáry a počty podle směru.
 8. Ukažte celkové výsledky relace, výsledky jednotlivých zón a graf průtoku dopravy po pěti sekundách.
@@ -63,7 +64,7 @@ Video zůstává v zařízení uživatele. Inference modelu, sledování i tvorb
 | Sestavení aplikace | Vite 8 | Vývojový server a produkční build |
 | Detekce | YOLOv10-N / YOLOv10-M | Ohraničení vozidel a názvy tříd COCO |
 | Běh modelu | Transformers.js + ONNX Runtime Web | Lokální inference v prohlížeči |
-| Akcelerace | WebGPU s náhradním WASM režimem | Hardwarová akcelerace a široká kompatibilita |
+| Akcelerace | Volitelný režim Auto, GPU/WebGPU nebo CPU/WASM | Hardwarová akcelerace a kompatibilní náhradní režim |
 | Sledování | Vlastní tracker typu SORT | Přiřazení detekcí, potvrzení a překlenutí výpadků |
 | Vykreslování | HTML video + Canvas 2D | Synchronizované boxy, trajektorie, zóny a čáry |
 | Testování | Vitest + ESLint + TypeScript | Testy chování a statická kontrola |
