@@ -1,53 +1,51 @@
-# AI Vision Traffic Scanner
+# AIVision Traffic Counter
 
-A Flutter starter app for roadside vehicle detection, tracking, and counting using a YOLO-style mobile inference pipeline.
+This repository contains a complete browser-based traffic counter and a separate Flutter mobile scaffold.
 
-## What is implemented
+## Web application
 
-- Cross-platform Flutter app shell with:
-  - home flow
-  - live scan screen
-  - imported video analysis screen
-  - results screen
-- React web app with:
-  - local video upload
-  - browser-side analysis loop
-  - overlay rendering
-  - session totals and summary
-  - downloaded local YOLOv10n vehicle detector for real testing
-- Shared domain models for detections, tracks, config, and session summaries
-- Lightweight tracker and one-count-per-vehicle logic
-- `VehicleInferenceService` abstraction with:
-  - `MethodChannelVehicleInferenceService` for native YOLO/ONNX integration
-  - `MockVehicleInferenceService` fallback so the app can still run before the native model is wired in
-- Android and iOS native channel stubs for the future ONNX Runtime Mobile integration
-- Unit tests for tracker and session behavior
+The maintained, runnable product is the React + Vite application under [`web/`](web/). It:
 
-## Current status
+- analyzes local video without uploading it;
+- runs local YOLOv10 ONNX models through Transformers.js;
+- selects WebGPU when available and falls back to WebAssembly;
+- deterministically samples by video time instead of playback timing;
+- tracks vehicles through short detection gaps;
+- counts confirmed tracks only when they cross an editable zone line;
+- separates upward and downward screen motion;
+- reports per-class, per-zone, and time-bucket totals; and
+- exports events and summaries as CSV or JSON.
 
-This workspace did not have the Flutter SDK installed, so the project was scaffolded manually. The code is structured to be implementation-ready, but it was not generated or verified with `flutter create`, `flutter test`, or a device build in this environment.
+### Windows quick start
 
-The React web app is scaffolded under [web/](C:/Users/KamilRiedl/Desktop/CHAT_GPT/AIVISION/web) and can run independently with Node/Vite.
+From the repository folder, run:
 
-## Next setup steps
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup-and-run.ps1
+```
 
-1. Install Flutter and Dart locally.
-2. From the project root, run `flutter pub get`.
-3. Generate platform build files if desired with `flutter create .`.
-4. Merge or preserve the included `android/` and `ios/` native channel stubs if Flutter regenerates those folders.
-5. Wire the Android/iOS stubs to ONNX Runtime Mobile and a real exported YOLO model.
+The script installs a supported Node.js LTS release when necessary, installs the locked web dependencies, prepares the local ONNX Runtime assets, starts the development server, and opens the app.
 
-## Web app setup
+### Manual start
 
-1. Go to [web/package.json](C:/Users/KamilRiedl/Desktop/CHAT_GPT/AIVISION/web/package.json).
-2. Run `npm install`.
-3. Run `npm run dev`.
-4. Open the web UI, choose a road video, and start the scan.
+```bash
+cd web
+npm install
+npm run dev
+```
 
-## Native inference contract
+Presenter materials are available in [English](PRESENTATION.md) and [Czech](PRESENTATION_CS.md). See [`web/README.md`](web/README.md) for operation, model, validation, and counting details.
 
-Method channel: `ai_vision_traffic_scanner/inference`  
-Event channel: `ai_vision_traffic_scanner/inference_stream`
+## Flutter scaffold
+
+The Flutter sources provide a future mobile shell with home, live scan, imported-video, and results flows. They also define a `VehicleInferenceService` abstraction, a mock implementation, and Android/iOS method-channel stubs for eventual native ONNX Runtime integration.
+
+The native inference implementation is not complete and was not built in this environment because the Flutter SDK is unavailable. The browser application does not depend on it.
+
+### Native inference contract
+
+- Method channel: `ai_vision_traffic_scanner/inference`
+- Event channel: `ai_vision_traffic_scanner/inference_stream`
 
 Supported method calls:
 
@@ -76,6 +74,4 @@ Expected event payload:
 }
 ```
 
-## Model pipeline
-
-See [docs/yolo_mobile_integration.md](docs/yolo_mobile_integration.md) for the training/export/runtime plan.
+See [`docs/yolo_mobile_integration.md`](docs/yolo_mobile_integration.md) for the proposed native training, export, and runtime pipeline.

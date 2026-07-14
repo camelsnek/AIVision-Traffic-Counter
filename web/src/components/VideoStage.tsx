@@ -1,174 +1,134 @@
-import { useRef } from 'react'
-import type { PointerEvent, RefObject } from 'react'
+import { useRef, useState } from 'react'
+import type {
+  ChangeEvent,
+  DragEvent as ReactDragEvent,
+  ReactNode,
+  RefObject,
+} from 'react'
 
-import { clamp } from '../lib/format'
-import type { DetectionRegion, DetectionZone } from '../types'
-
-type RegionHandle = 'move' | 'resize'
+import type { AnalysisProgress, AnalysisStatus, VideoSize } from '../hooks/useTrafficAnalysis'
+import { formatDuration } from '../lib/format'
 
 interface VideoStageProps {
   videoRef: RefObject<HTMLVideoElement | null>
   overlayRef: RefObject<HTMLCanvasElement | null>
   videoUrl: string | null
-  statusLabel: string
-  zones: DetectionZone[]
-  activeZoneId: string | null
-  showRegionEditor: boolean
-  onSelectZone: (zoneId: string) => void
-  onZoneRegionChange: (zoneId: string, nextRegion: DetectionRegion) => void
-}
-
-interface DragState {
-  zoneId: string
-  mode: RegionHandle
-  startX: number
-  startY: number
-  initialRegion: DetectionRegion
+  fileName: string | null
+  videoSize: VideoSize | null
+  status: AnalysisStatus
+  progress: AnalysisProgress
+  loadFile(file: File): void
+  /** Zone-editor layer, stacked above the overlay canvas. */
+  children?: ReactNode
 }
 
 export function VideoStage({
   videoRef,
   overlayRef,
   videoUrl,
-  statusLabel,
-  zones,
-  activeZoneId,
-  showRegionEditor,
-  onSelectZone,
-  onZoneRegionChange,
+  fileName,
+  videoSize,
+  status,
+  progress,
+  loadFile,
+  children,
 }: VideoStageProps) {
-  const shellRef = useRef<HTMLDivElement>(null)
-  const dragStateRef = useRef<DragState | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [dragActive, setDragActive] = useState(false)
+  const busy = status === 'running' || status === 'loading'
 
-  function startDrag(event: PointerEvent, zoneId: string, mode: RegionHandle) {
-    if (!showRegionEditor) {
-      return
+  const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0]
+    if (file) {
+      loadFile(file)
     }
+    event.currentTarget.value = ''
+  }
 
-    const shell = shellRef.current
-    const zone = zones.find((entry) => entry.id == zoneId)
-    if (!shell || !zone) {
-      return
-    }
-
+  const handleDragOver = (event: ReactDragEvent<HTMLElement>) => {
     event.preventDefault()
-    event.stopPropagation()
-
-    onSelectZone(zoneId)
-
-    dragStateRef.current = {
-      zoneId,
-      mode,
-      startX: event.clientX,
-      startY: event.clientY,
-      initialRegion: zone.region,
-    }
-
-    shell.setPointerCapture(event.pointerId)
+    setDragActive(true)
   }
 
-  function handlePointerMove(event: PointerEvent) {
-    const shell = shellRef.current
-    const dragState = dragStateRef.current
-    if (!shell || !dragState) {
-      return
-    }
-
-    const rect = shell.getBoundingClientRect()
-    const deltaX = (event.clientX - dragState.startX) / rect.width
-    const deltaY = (event.clientY - dragState.startY) / rect.height
-
-    if (dragState.mode === 'move') {
-      const nextLeft = clamp(dragState.initialRegion.left + deltaX, 0, 1 - dragState.initialRegion.width)
-      const nextTop = clamp(dragState.initialRegion.top + deltaY, 0, 1 - dragState.initialRegion.height)
-      onZoneRegionChange(dragState.zoneId, {
-        ...dragState.initialRegion,
-        left: nextLeft,
-        top: nextTop,
-      })
-      return
-    }
-
-    const nextWidth = clamp(dragState.initialRegion.width + deltaX, 0.12, 1 - dragState.initialRegion.left)
-    const nextHeight = clamp(dragState.initialRegion.height + deltaY, 0.12, 1 - dragState.initialRegion.top)
-    onZoneRegionChange(dragState.zoneId, {
-      ...dragState.initialRegion,
-      width: nextWidth,
-      height: nextHeight,
-    })
+  const handleDragLeave = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault()
+    setDragActive(false)
   }
 
-  function endDrag(event: PointerEvent) {
-    const shell = shellRef.current
-    dragStateRef.current = null
-    if (shell?.hasPointerCapture(event.pointerId)) {
-      shell.releasePointerCapture(event.pointerId)
+  const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
+    event.preventDefault()
+    setDragActive(false)
+    const file = event.dataTransfer.files[0]
+    if (file && (file.type === '' || file.type.startsWith('video/'))) {
+      loadFile(file)
     }
   }
 
   return (
-    <section className="video-stage">
-      <div
-        ref={shellRef}
-        className={`video-shell${showRegionEditor ? ' video-shell-editing' : ''}`}
-        onPointerMove={handlePointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-      >
-        {videoUrl ? (
-          <>
-            <video ref={videoRef} className="video-element" controls playsInline preload="metadata" src={videoUrl} />
-            <canvas ref={overlayRef} className="video-overlay" />
-            {zones.map((zone) => {
-              const isActive = zone.id === activeZoneId
-              return (
-                <div
-                  key={zone.id}
-                  className={[
-                    'detection-region',
-                    isActive ? 'detection-region-active' : '',
-                    showRegionEditor ? 'detection-region-editable' : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' ')}
-                  style={{
-                    left: `${zone.region.left * 100}%`,
-                    top: `${zone.region.top * 100}%`,
-                    width: `${zone.region.width * 100}%`,
-                    height: `${zone.region.height * 100}%`,
-                  }}
-                  onPointerDown={(event) => startDrag(event, zone.id, 'move')}
-                  onClick={() => onSelectZone(zone.id)}
-                >
-                  <span className="detection-region-label">{zone.label}</span>
-                  <div
-                    className="detection-region-line"
-                    style={{
-                      top: `${zone.countingLineOffset * 100}%`,
-                    }}
-                  />
-                  {showRegionEditor && isActive ? (
-                    <button
-                      type="button"
-                      className="detection-region-handle"
-                      onPointerDown={(event) => startDrag(event, zone.id, 'resize')}
-                      aria-label={`Resize ${zone.label}`}
-                    />
-                  ) : null}
-                </div>
-              )
-            })}
-          </>
-        ) : (
-          <div className="empty-state">
-            <p>Drop in a roadside video and the app will scan passing vehicles frame by frame.</p>
+    <div className="card stage-shell">
+      {videoUrl === null ? (
+        <button
+          type="button"
+          className={dragActive ? 'dropzone is-drag' : 'dropzone'}
+          onClick={() => inputRef.current?.click()}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <svg
+            width="36"
+            height="36"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="4" width="18" height="16" rx="2.5" />
+            <path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" />
+          </svg>
+          <span className="dropzone-title">Drop a traffic video here</span>
+          <span className="dropzone-hint">or click to browse</span>
+          <span className="dropzone-note">MP4, MOV, WebM — processed locally, nothing uploads</span>
+        </button>
+      ) : (
+        <>
+          <div
+            className="stage"
+            style={{ aspectRatio: videoSize ? `${videoSize.width} / ${videoSize.height}` : '16 / 9' }}
+          >
+            <video ref={videoRef} className="stage-video" src={videoUrl} playsInline preload="auto" muted />
+            <canvas ref={overlayRef} className="stage-overlay" />
+            {children}
           </div>
-        )}
-      </div>
-      <div className="stage-footer">
-        <span className="status-pill">{statusLabel}</span>
-        <p>Each detection zone now tracks and counts independently, which works well for opposite traffic directions.</p>
-      </div>
-    </section>
+          <div className="stage-footer">
+            <div className="progress-row">
+              <div className={status === 'loading' ? 'progress-track is-loading' : 'progress-track'}>
+                <div className="progress-fill" style={{ width: `${progress.progress * 100}%` }} />
+              </div>
+              <span className="progress-time">
+                {formatDuration(progress.videoTime)} / {formatDuration(progress.durationSeconds)}
+              </span>
+            </div>
+            <div className="stage-meta">
+              <span className="file-name" title={fileName ?? undefined}>
+                {fileName}
+              </span>
+              <button
+                type="button"
+                className="btn btn-small"
+                onClick={() => inputRef.current?.click()}
+                disabled={busy}
+              >
+                Replace video
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+      <input ref={inputRef} type="file" accept="video/*" hidden onChange={handleFileInput} />
+    </div>
   )
 }
