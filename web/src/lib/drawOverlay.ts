@@ -138,7 +138,8 @@ function drawTrack(
   const counted = track.countedZones.length > 0
   const fontSize = 13 * unit
   context.font = `600 ${fontSize}px ui-sans-serif, system-ui, sans-serif`
-  const label = `${track.vehicleClass} #${track.id}${counted ? ' \u2713' : ''}`
+  const trackState = track.confirmed ? 'tracked' : 'acquiring'
+  const label = `${track.vehicleClass.toUpperCase()} · ${trackState}${counted ? ' \u2713' : ''}`
   const paddingX = 6 * unit
   const chipHeight = 20 * unit
   const chipWidth = context.measureText(label).width + paddingX * 2

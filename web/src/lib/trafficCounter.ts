@@ -55,7 +55,6 @@ interface MatchCandidate {
 }
 
 const MAX_TRAIL_POINTS = 24
-const MAX_PREDICTION_STEPS = 4
 /** Candidate gate bounds, in normalized frame units. */
 const MIN_GATE = 0.05
 const MAX_GATE = 0.28
@@ -134,10 +133,13 @@ export class TrafficCounter {
     const candidates: MatchCandidate[] = []
 
     for (const track of this.tracks) {
-      const steps = Math.min(track.misses + 1, MAX_PREDICTION_STEPS)
+      // Missed tracks are coasted by one velocity step at the end of every
+      // update, so track.box already represents the latest sampled time.
+      // Extrapolate exactly one additional step for the incoming detection;
+      // multiplying by misses again would double-advance the prediction.
       const predicted: RectNorm = {
-        left: track.box.left + track.velX * steps,
-        top: track.box.top + track.velY * steps,
+        left: track.box.left + track.velX,
+        top: track.box.top + track.velY,
         width: track.box.width,
         height: track.box.height,
       }

@@ -136,6 +136,27 @@ describe('TrafficCounter counting contract', () => {
     expect(events[0].direction).toBe('down')
   })
 
+  it('keeps one identity through several missed detections', () => {
+    const counter = new TrafficCounter([standardZone])
+    const frames: Detection[][] = [
+      [carBox(0.5, 0.2)],
+      [carBox(0.5, 0.25)],
+      [carBox(0.5, 0.3)],
+      [],
+      [],
+      [],
+      [],
+      [carBox(0.5, 0.55)],
+      [carBox(0.5, 0.6)],
+      [carBox(0.5, 0.65)],
+    ]
+    const { events, updates } = drive(counter, frames)
+
+    expect(events).toHaveLength(1)
+    expect(events[0].trackId).toBe(1)
+    expect(updates.at(-1)?.tracks.filter((track) => track.confirmed).map((track) => track.id)).toEqual([1])
+  })
+
   it('counts two parallel vehicles as two distinct tracks', () => {
     const counter = new TrafficCounter([standardZone])
     const ys = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
