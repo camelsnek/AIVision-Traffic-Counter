@@ -1,7 +1,19 @@
-import type { CountEvent, CountingZone, FlowBucket, SessionCounts, VehicleClass, ZoneCounts } from '../types'
+import type {
+  CountEvent,
+  CountingZone,
+  DirectionCounts,
+  FlowBucket,
+  SessionCounts,
+  VehicleClass,
+  ZoneCounts,
+} from '../types'
 
 export function emptyClassCounts(): Record<VehicleClass, number> {
   return { car: 0, truck: 0, bus: 0, motorcycle: 0 }
+}
+
+export function emptyDirectionCounts(): DirectionCounts {
+  return { down: 0, up: 0, right: 0, left: 0 }
 }
 
 /** Aggregates count events into session, zone, class, and direction totals. */
@@ -11,14 +23,15 @@ export function summarizeEvents(events: readonly CountEvent[], zones: readonly C
     zoneById.set(zone.id, {
       zoneId: zone.id,
       label: zone.label,
+      lineOrientation: zone.lineOrientation,
       total: 0,
-      byDirection: { down: 0, up: 0 },
+      byDirection: emptyDirectionCounts(),
       byClass: emptyClassCounts(),
     })
   }
 
   const byClass = emptyClassCounts()
-  const byDirection = { down: 0, up: 0 }
+  const byDirection = emptyDirectionCounts()
 
   for (const event of events) {
     byClass[event.vehicleClass] += 1

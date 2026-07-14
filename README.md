@@ -11,8 +11,8 @@ The maintained, runnable product is the React + Vite application under [`web/`](
 - provides explicit Auto, GPU/WebGPU, and CPU/WebAssembly inference controls;
 - deterministically samples by video time instead of playback timing;
 - tracks vehicles through short detection gaps;
-- counts confirmed tracks only when they cross an editable zone line;
-- separates upward and downward screen motion;
+- counts confirmed tracks only when they cross an editable horizontal or vertical zone line;
+- separates upward, downward, leftward, and rightward screen motion;
 - reports per-class, per-zone, and time-bucket totals; and
 - exports events and summaries as CSV or JSON.
 

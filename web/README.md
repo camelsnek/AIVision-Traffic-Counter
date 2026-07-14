@@ -10,8 +10,8 @@ No video is uploaded to a server.
 - Lets the user select Auto, GPU/WebGPU, or CPU/WebAssembly inference.
 - Samples uploaded videos by video timestamp, so results do not depend on playback speed or machine performance.
 - Tracks tentative and confirmed vehicles through brief detection gaps.
-- Counts line crossings in both screen directions exactly once per vehicle and zone.
-- Supports editable rectangular zones with independent counting lines.
+- Counts crossings in all four screen directions exactly once per vehicle and zone.
+- Supports editable rectangular zones with independently positioned horizontal or vertical counting lines.
 - Reports totals by class, direction, zone, and five-second flow bucket.
 - Exports event-level CSV, summary CSV, and full JSON results.
 - Keeps model weights and ONNX Runtime assets local; runtime CDN access is not required.
@@ -28,6 +28,12 @@ npm run dev
 ```
 
 `predev` copies the ONNX Runtime assets matching the installed Transformers.js version into `vendor/ort/`. Open the printed local URL, choose a road video, adjust zones if needed, and select **Start analysis**.
+
+## Counting-line orientation
+
+Select **Edit zones**, choose a zone, and use **Horizontal** or **Vertical** under **Counting line**. The highlighted grip moves top-to-bottom for a horizontal line and left-to-right for a vertical line. Horizontal lines report downward/upward crossings; vertical lines report leftward/rightward crossings. A session may mix both orientations across independent zones.
+
+Summary CSV and JSON exports preserve each zone's orientation and all four direction totals.
 
 ## Performance controls
 
@@ -47,7 +53,7 @@ npm run lint
 npm run build
 ```
 
-The test suite covers geometry, event aggregation, and the tracking/counting contracts: bidirectional crossings, one count per track, stationary-object rejection, detection gaps, parallel vehicles, tentative tracks, class voting, and zone bounds.
+The test suite covers geometry, event aggregation, exports, and the tracking/counting contracts: horizontal and vertical bidirectional crossings, mixed-orientation zones, one count per track, stationary-object rejection, detection gaps, parallel vehicles, tentative tracks, class voting, and zone bounds.
 
 ## Counting model
 

@@ -12,6 +12,7 @@ import type {
   CountingZone,
   EngineInfo,
   EnginePreference,
+  LineOrientation,
   ModelProfileId,
   RectNorm,
   SessionCounts,
@@ -62,6 +63,7 @@ export interface TrafficAnalysis {
   removeZone(zoneId: string): void
   updateZoneRegion(zoneId: string, region: RectNorm): void
   updateZoneLine(zoneId: string, lineOffset: number): void
+  updateZoneOrientation(zoneId: string, lineOrientation: LineOrientation): void
 
   start(): Promise<void>
   stop(): void
@@ -374,6 +376,13 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     }))
   }, [])
 
+  const updateZoneOrientation = useCallback((zoneId: string, lineOrientation: LineOrientation) => {
+    setConfig((current) => ({
+      ...current,
+      zones: current.zones.map((zone) => (zone.id === zoneId ? { ...zone, lineOrientation } : zone)),
+    }))
+  }, [])
+
   const exportBaseName = (fileName ?? 'traffic-session').replace(/\.[^.]+$/, '')
 
   return {
@@ -400,6 +409,7 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     removeZone,
     updateZoneRegion,
     updateZoneLine,
+    updateZoneOrientation,
     start,
     stop,
     reset,
@@ -438,6 +448,7 @@ function createZone(zoneNumber: number): CountingZone {
       zoneNumber % 2 === 0
         ? { left: 0.06, top: 0.12, width: 0.88, height: 0.34 }
         : { left: 0.06, top: 0.3, width: 0.88, height: 0.55 },
+    lineOrientation: 'horizontal',
     lineOffset: 0.55,
   }
 }

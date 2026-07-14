@@ -34,23 +34,29 @@ export function eventsToCsv(events: readonly CountEvent[], zones: readonly Count
 /** One row per zone with direction and class breakdowns, plus a totals row. */
 export function summaryToCsv(events: readonly CountEvent[], zones: readonly CountingZone[]): string {
   const counts = summarizeEvents(events, zones)
-  const rows = [['zone', 'total', 'down', 'up', ...vehicleClasses]]
+  const rows = [['zone', 'line_orientation', 'total', 'down', 'up', 'left', 'right', ...vehicleClasses]]
 
   for (const zone of counts.zones) {
     rows.push([
       zone.label,
+      zone.lineOrientation,
       String(zone.total),
       String(zone.byDirection.down),
       String(zone.byDirection.up),
+      String(zone.byDirection.left),
+      String(zone.byDirection.right),
       ...vehicleClasses.map((vehicleClass) => String(zone.byClass[vehicleClass])),
     ])
   }
 
   rows.push([
     'TOTAL',
+    '',
     String(counts.total),
     String(counts.byDirection.down),
     String(counts.byDirection.up),
+    String(counts.byDirection.left),
+    String(counts.byDirection.right),
     ...vehicleClasses.map((vehicleClass) => String(counts.byClass[vehicleClass])),
   ])
 

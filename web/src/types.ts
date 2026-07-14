@@ -2,8 +2,10 @@ export const vehicleClasses = ['car', 'truck', 'bus', 'motorcycle'] as const
 
 export type VehicleClass = (typeof vehicleClasses)[number]
 
-/** Crossing direction in screen space: 'down' = increasing y, 'up' = decreasing y. */
-export type Direction = 'down' | 'up'
+/** Crossing direction in screen space; x increases right and y increases down. */
+export type Direction = 'down' | 'up' | 'right' | 'left'
+
+export type LineOrientation = 'horizontal' | 'vertical'
 
 export type ModelProfileId = 'onnx-community/yolov10n' | 'onnx-community/yolov10m'
 
@@ -24,15 +26,18 @@ export interface PointNorm {
 }
 
 /**
- * A counting zone: vehicles are counted exactly once per zone when a
- * confirmed track's center crosses the zone's counting line while inside
- * the zone's horizontal extent.
+ * A counting zone: vehicles are counted exactly once when a confirmed
+ * track crosses the zone's line while inside the line's bounded extent.
  */
 export interface CountingZone {
   id: string
   label: string
   region: RectNorm
-  /** Vertical position of the counting line within the region, 0 = top edge, 1 = bottom edge. */
+  lineOrientation: LineOrientation
+  /**
+   * Position of the line on its perpendicular axis: top-to-bottom for a
+   * horizontal line, left-to-right for a vertical line.
+   */
   lineOffset: number
 }
 
@@ -94,11 +99,14 @@ export interface EngineInfo {
 export interface DirectionCounts {
   down: number
   up: number
+  right: number
+  left: number
 }
 
 export interface ZoneCounts {
   zoneId: string
   label: string
+  lineOrientation: LineOrientation
   total: number
   byDirection: DirectionCounts
   byClass: Record<VehicleClass, number>

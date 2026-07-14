@@ -17,7 +17,7 @@ Aplikace proto doplňuje stav a pravidla nutná pro skutečné sčítání dopra
 - pomocí predikce pohybu překonává krátké výpadky detekce;
 - počítá pouze skutečné překročení čáry;
 - každou stopu započítá v dané zóně pouze jednou;
-- rozlišuje pohyb směrem nahoru a dolů v obrazu; a
+- rozlišuje pohyb směrem nahoru, dolů, doleva a doprava v obrazu; a
 - zobrazuje výsledky podle třídy, směru, zóny a časového úseku.
 
 ## Pětiminutová ukázka
@@ -30,7 +30,7 @@ Aplikace proto doplňuje stav a pravidla nutná pro skutečné sčítání dopra
 
 2. Skript podle potřeby nainstaluje podporovanou LTS verzi Node.js, nainstaluje přesné npm závislosti, připraví lokální soubory ONNX Runtime, spustí Vite a otevře aplikaci.
 3. Přetáhněte dopravní video ve formátu MP4, MOV nebo WebM do prostoru videa.
-4. Zvolte **Edit zones** a ukažte, že lze měnit polohu i velikost detekční oblasti a posouvat sčítací čáru.
+4. Zvolte **Edit zones**, pro aktivní sčítací čáru vyberte **Horizontal** nebo **Vertical** a ukažte, že lze měnit polohu i velikost oblasti i polohu čáry.
 5. Vysvětlete tři hlavní ovladače výkonu a kvality:
    - **Processing device** volí automatický režim, GPU/WebGPU nebo CPU/WebAssembly.
    - **Confidence** vyvažuje počet zachycených vozidel proti chybným detekcím.
@@ -105,7 +105,7 @@ Aktuální webová aplikace úspěšně prochází:
 
 - produkčním sestavením TypeScriptu;
 - kontrolou ESLint; a
-- 21 behaviorálními testy sledování, překročení čáry, geometrie a agregace.
+- 26 behaviorálními testy sledování, vodorovného a svislého překročení, geometrie, exportů a agregace.
 
 Opakovaný test na reálném 21,5sekundovém 4K videu z dálnice dal při obou spuštěních stejný výsledek: 10 událostí, z toho 7 směrem dolů a 3 směrem nahoru, s klasifikací 8 osobních a 2 nákladních vozidel.
 
@@ -145,7 +145,7 @@ Vytváří jednoznačnou a kontrolovatelnou dopravní událost a zabraňuje zapo
 Časové body se odvozují z času videa. Výkon zařízení proto mění délku analýzy, ne výběr zpracovaných časových bodů.
 
 **Lze sčítat dva směry nebo dva jízdní pásy?**  
-Ano. Lze použít samostatné zóny nebo jednu společnou zónu a výsledky rozdělit podle pohybu nahoru a dolů.
+Ano. Lze použít samostatné zóny nebo jednu společnou zónu. Vodorovná čára rozlišuje pohyb nahoru a dolů, svislá čára pohyb doleva a doprava.
 
 **Lze aplikaci změnit na systém pro živou kameru?**  
 Engine sledování a překročení lze znovu použít, ale živý vstup vyžaduje jiný plánovač snímků a provozní monitoring. Aktuální dodaná verze analyzuje nahrané videosoubory.

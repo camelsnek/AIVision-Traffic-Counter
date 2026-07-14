@@ -65,14 +65,20 @@ function drawZone(
   context.strokeRect(left, top, zoneWidth, zoneHeight)
   context.setLineDash([])
 
-  // Counting line with direction ticks and live totals.
-  const lineY = top + zoneHeight * zone.lineOffset
+  // Counting line with direction totals for its configured axis.
   context.globalAlpha = 1
   context.strokeStyle = countingLineColor
   context.lineWidth = 2.4 * unit
   context.beginPath()
-  context.moveTo(left, lineY)
-  context.lineTo(left + zoneWidth, lineY)
+  if (zone.lineOrientation === 'vertical') {
+    const lineX = left + zoneWidth * zone.lineOffset
+    context.moveTo(lineX, top)
+    context.lineTo(lineX, top + zoneHeight)
+  } else {
+    const lineY = top + zoneHeight * zone.lineOffset
+    context.moveTo(left, lineY)
+    context.lineTo(left + zoneWidth, lineY)
+  }
   context.stroke()
 
   const zoneCounts = state.counts?.zones.find((entry) => entry.zoneId === zone.id)
@@ -80,7 +86,9 @@ function drawZone(
   context.font = `600 ${fontSize}px ui-sans-serif, system-ui, sans-serif`
 
   const label = zoneCounts
-    ? `${zone.label}  ·  ${zoneCounts.byDirection.down} \u2193  ${zoneCounts.byDirection.up} \u2191`
+    ? zone.lineOrientation === 'vertical'
+      ? `${zone.label}  ·  ${zoneCounts.byDirection.left} \u2190  ${zoneCounts.byDirection.right} \u2192`
+      : `${zone.label}  ·  ${zoneCounts.byDirection.down} \u2193  ${zoneCounts.byDirection.up} \u2191`
     : zone.label
   const paddingX = 8 * unit
   const chipHeight = 24 * unit

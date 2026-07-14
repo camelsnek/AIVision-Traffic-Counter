@@ -72,6 +72,7 @@ export default function App() {
             setActiveZone={analysis.setActiveZone}
             addZone={analysis.addZone}
             removeZone={analysis.removeZone}
+            updateZoneOrientation={analysis.updateZoneOrientation}
             busy={busy}
             hasVideo={analysis.videoUrl !== null}
           />
@@ -94,8 +95,8 @@ export default function App() {
         </aside>
       </main>
       <footer className="footnote">
-        Counting rule: one count per vehicle per zone, on counting-line crossing. Direction ↓/↑ follows
-        screen motion.
+        Counting rule: one count per vehicle per zone, on counting-line crossing. Direction
+        ↓/↑/←/→ follows screen motion.
       </footer>
     </div>
   )

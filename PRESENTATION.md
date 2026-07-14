@@ -17,7 +17,7 @@ This application adds the state required for useful counting:
 - survives short detection gaps using motion prediction;
 - counts only a real line crossing;
 - counts each track once per zone;
-- separates upward and downward screen motion; and
+- separates upward, downward, leftward, and rightward screen motion; and
 - reports totals by class, direction, zone, and time bucket.
 
 ## Five-minute demo
@@ -30,7 +30,7 @@ This application adds the state required for useful counting:
 
 2. The script installs a supported Node.js LTS release when necessary, installs exact npm dependencies, prepares local ONNX Runtime assets, starts Vite, and opens the app.
 3. Drop an MP4, MOV, or WebM traffic video onto the video stage.
-4. Select **Edit zones** and show that the detection region and counting line can be moved.
+4. Select **Edit zones**, choose **Horizontal** or **Vertical** for the active counting line, and show that the region and line can be moved.
 5. Explain the three main performance and quality controls:
    - **Processing device** chooses Auto, GPU/WebGPU, or CPU/WebAssembly.
    - **Confidence** balances recall against false detections.
@@ -105,7 +105,7 @@ The current web application passes:
 
 - the TypeScript production build;
 - ESLint; and
-- 21 behavioral unit tests across tracking, crossing, geometry, and aggregation.
+- 26 behavioral unit tests across tracking, horizontal and vertical crossing, geometry, exports, and aggregation.
 
 A repeated real-video test on a 21.5-second 4K highway clip produced the same result twice: 10 crossing events, split into 7 downward and 3 upward events, with 8 cars and 2 trucks.
 
@@ -145,7 +145,7 @@ It creates an explicit, auditable traffic event and avoids counting parked or pe
 The sampling timestamps are derived from video time, so machine speed changes analysis duration rather than which timestamps are processed.
 
 **Can it count two carriageways?**  
-Yes. Use separate zones or one shared zone and use the upward/downward direction split.
+Yes. Use separate zones or one shared zone. Horizontal lines split upward/downward motion; vertical lines split leftward/rightward motion.
 
 **Can it become a live-camera system?**  
 The tracking and crossing engine can be reused, but live ingestion needs a different frame scheduler and operational monitoring. The current delivered workflow analyzes uploaded video files.

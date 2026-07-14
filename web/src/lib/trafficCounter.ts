@@ -212,24 +212,12 @@ export class TrafficCounter {
     }
 
     const current = track.lastCenter
-    const midX = (previous.x + current.x) / 2
-
     for (const zone of this.zones) {
       if (track.countedZones.has(zone.id)) {
         continue
       }
-      if (midX < zone.region.left || midX > zone.region.left + zone.region.width) {
-        continue
-      }
 
-      const lineY = zone.region.top + zone.region.height * zone.lineOffset
-      let direction: Direction | null = null
-      if (previous.y < lineY && current.y >= lineY) {
-        direction = 'down'
-      } else if (previous.y > lineY && current.y <= lineY) {
-        direction = 'up'
-      }
-
+      const direction = crossingDirection(zone, previous, current)
       if (!direction) {
         continue
       }
@@ -279,6 +267,48 @@ export class TrafficCounter {
       pending: [],
     }
   }
+}
+
+function crossingDirection(
+  zone: CountingZone,
+  previous: PointNorm,
+  current: PointNorm,
+): Direction | null {
+  if (zone.lineOrientation === 'vertical') {
+    const lineX = zone.region.left + zone.region.width * zone.lineOffset
+    let direction: Direction | null = null
+    if (previous.x < lineX && current.x >= lineX) {
+      direction = 'right'
+    } else if (previous.x > lineX && current.x <= lineX) {
+      direction = 'left'
+    }
+    if (!direction) {
+      return null
+    }
+
+    const crossingProgress = (lineX - previous.x) / (current.x - previous.x)
+    const crossingY = previous.y + (current.y - previous.y) * crossingProgress
+    return crossingY >= zone.region.top && crossingY <= zone.region.top + zone.region.height
+      ? direction
+      : null
+  }
+
+  const lineY = zone.region.top + zone.region.height * zone.lineOffset
+  let direction: Direction | null = null
+  if (previous.y < lineY && current.y >= lineY) {
+    direction = 'down'
+  } else if (previous.y > lineY && current.y <= lineY) {
+    direction = 'up'
+  }
+  if (!direction) {
+    return null
+  }
+
+  const crossingProgress = (lineY - previous.y) / (current.y - previous.y)
+  const crossingX = previous.x + (current.x - previous.x) * crossingProgress
+  return crossingX >= zone.region.left && crossingX <= zone.region.left + zone.region.width
+    ? direction
+    : null
 }
 
 /** The class with the highest cumulative confidence over the track lifetime. */

@@ -7,6 +7,8 @@ interface SessionPanelProps {
 }
 
 export function SessionPanel({ counts }: SessionPanelProps) {
+  const hasHorizontal = counts.zones.some((zone) => zone.lineOrientation === 'horizontal')
+  const hasVertical = counts.zones.some((zone) => zone.lineOrientation === 'vertical')
   return (
     <section className="card" aria-label="Session totals">
       <header className="card-head">
@@ -17,20 +19,42 @@ export function SessionPanel({ counts }: SessionPanelProps) {
         <span className="session-total-label">vehicles counted</span>
       </div>
       <div className="session-directions">
-        <span>
-          <span className="dir-arrow" aria-hidden="true">
-            ↓
-          </span>
-          <span className="sr-only">Downward crossings: </span>
-          {counts.byDirection.down}
-        </span>
-        <span>
-          <span className="dir-arrow" aria-hidden="true">
-            ↑
-          </span>
-          <span className="sr-only">Upward crossings: </span>
-          {counts.byDirection.up}
-        </span>
+        {hasHorizontal && (
+          <>
+            <span>
+              <span className="dir-arrow" aria-hidden="true">
+                ↓
+              </span>
+              <span className="sr-only">Downward crossings: </span>
+              {counts.byDirection.down}
+            </span>
+            <span>
+              <span className="dir-arrow" aria-hidden="true">
+                ↑
+              </span>
+              <span className="sr-only">Upward crossings: </span>
+              {counts.byDirection.up}
+            </span>
+          </>
+        )}
+        {hasVertical && (
+          <>
+            <span>
+              <span className="dir-arrow" aria-hidden="true">
+                ←
+              </span>
+              <span className="sr-only">Leftward crossings: </span>
+              {counts.byDirection.left}
+            </span>
+            <span>
+              <span className="dir-arrow" aria-hidden="true">
+                →
+              </span>
+              <span className="sr-only">Rightward crossings: </span>
+              {counts.byDirection.right}
+            </span>
+          </>
+        )}
       </div>
       <ul className="class-list">
         {vehicleClasses.map((vehicleClass) => (

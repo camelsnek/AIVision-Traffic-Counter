@@ -515,6 +515,9 @@
 
 .zone-line {
   position: absolute;
+}
+
+.zone-line.is-horizontal {
   left: 0;
   right: 0;
   height: 12px;
@@ -522,18 +525,34 @@
   cursor: ns-resize;
 }
 
+.zone-line.is-vertical {
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+}
+
 .zone-line-grip {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 36px;
-  height: 5px;
   transform: translate(-50%, -50%);
   border-radius: 999px;
   background: var(--accent-strong);
   box-shadow: 0 0 0 1px var(--bg-0);
   opacity: 0;
   transition: opacity 0.12s ease;
+}
+
+.zone-line.is-horizontal .zone-line-grip {
+  width: 36px;
+  height: 5px;
+}
+
+.zone-line.is-vertical .zone-line-grip {
+  width: 5px;
+  height: 36px;
 }
 
 .zone-box.is-active .zone-resize,
@@ -599,6 +618,7 @@
 .session-directions {
   display: flex;
   gap: 18px;
+  flex-wrap: wrap;
   margin-top: 10px;
   font-size: 13px;
   color: var(--text-1);
@@ -646,6 +666,25 @@
   display: flex;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.zone-orientation-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -2px 0 10px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.zone-orientation-options {
+  display: flex;
+  gap: 4px;
+}
+
+.zone-orientation-options .btn {
+  padding: 5px 8px;
 }
 
 .zone-edit-hint {

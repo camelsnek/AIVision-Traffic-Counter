@@ -17,6 +17,7 @@ interface DragState {
   originY: number
   /** Zone region at drag start; deltas are applied against this. */
   region: RectNorm
+  lineOrientation: CountingZone['lineOrientation']
 }
 
 interface ZoneEditorProps {
@@ -59,6 +60,7 @@ export function ZoneEditor({
       originX: event.clientX,
       originY: event.clientY,
       region: zone.region,
+      lineOrientation: zone.lineOrientation,
     }
     layer.setPointerCapture(event.pointerId)
   }
@@ -75,10 +77,18 @@ export function ZoneEditor({
     }
 
     if (drag.kind === 'line') {
-      const zoneTopPx = rect.top + drag.region.top * rect.height
-      const zoneHeightPx = drag.region.height * rect.height
-      if (zoneHeightPx > 0) {
-        updateZoneLine(drag.zoneId, clamp((event.clientY - zoneTopPx) / zoneHeightPx, 0, 1))
+      if (drag.lineOrientation === 'vertical') {
+        const zoneLeftPx = rect.left + drag.region.left * rect.width
+        const zoneWidthPx = drag.region.width * rect.width
+        if (zoneWidthPx > 0) {
+          updateZoneLine(drag.zoneId, clamp((event.clientX - zoneLeftPx) / zoneWidthPx, 0, 1))
+        }
+      } else {
+        const zoneTopPx = rect.top + drag.region.top * rect.height
+        const zoneHeightPx = drag.region.height * rect.height
+        if (zoneHeightPx > 0) {
+          updateZoneLine(drag.zoneId, clamp((event.clientY - zoneTopPx) / zoneHeightPx, 0, 1))
+        }
       }
       return
     }
@@ -137,7 +147,7 @@ export function ZoneEditor({
           key={zone.id}
           role="button"
           tabIndex={editing ? 0 : -1}
-          aria-label={`${zone.label}: drag to move, corner to resize, line to set crossing`}
+          aria-label={`${zone.label}: drag to move, corner to resize, line grip to position`}
           className={zone.id === activeZoneId ? 'zone-box is-active' : 'zone-box'}
           style={{
             left: `${zone.region.left * 100}%`,
@@ -149,8 +159,12 @@ export function ZoneEditor({
           onKeyDown={(event) => selectOnKey(event, zone.id)}
         >
           <div
-            className="zone-line"
-            style={{ top: `${zone.lineOffset * 100}%` }}
+            className={`zone-line is-${zone.lineOrientation}`}
+            style={
+              zone.lineOrientation === 'vertical'
+                ? { left: `${zone.lineOffset * 100}%` }
+                : { top: `${zone.lineOffset * 100}%` }
+            }
             onPointerDown={(event) => beginDrag(event, zone, 'line')}
           >
             <span className="zone-line-grip" />

@@ -28,6 +28,16 @@ const standardZone: CountingZone = {
   label: 'Zone 1',
   // Counting line sits at y = 0.1 + 0.8 * 0.5 = 0.5, x-range [0.1, 0.9].
   region: { left: 0.1, top: 0.1, width: 0.8, height: 0.8 },
+  lineOrientation: 'horizontal',
+  lineOffset: 0.5,
+}
+
+const verticalZone: CountingZone = {
+  id: 'vertical',
+  label: 'Vertical zone',
+  // Counting line sits at x = 0.1 + 0.8 * 0.5 = 0.5, y-range [0.1, 0.9].
+  region: { left: 0.1, top: 0.1, width: 0.8, height: 0.8 },
+  lineOrientation: 'vertical',
   lineOffset: 0.5,
 }
 
@@ -80,6 +90,42 @@ describe('TrafficCounter counting contract', () => {
 
     expect(events).toHaveLength(1)
     expect(events[0].direction).toBe('up')
+  })
+
+  it('counts rightward and leftward vertical-line crossings exactly once', () => {
+    const rightward = new TrafficCounter([verticalZone])
+    const leftward = new TrafficCounter([verticalZone])
+    const xs = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
+
+    const rightEvents = drive(
+      rightward,
+      xs.map((x) => [carBox(x, 0.5)]),
+    ).events
+    const leftEvents = drive(
+      leftward,
+      [...xs].reverse().map((x) => [carBox(x, 0.5)]),
+    ).events
+
+    expect(rightEvents).toHaveLength(1)
+    expect(rightEvents[0].direction).toBe('right')
+    expect(leftEvents).toHaveLength(1)
+    expect(leftEvents[0].direction).toBe('left')
+  })
+
+  it('counts one track independently in mixed horizontal and vertical zones', () => {
+    const counter = new TrafficCounter([standardZone, verticalZone])
+    const positions = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
+    const { events } = drive(
+      counter,
+      positions.map((position) => [carBox(position, position)]),
+    )
+
+    expect(events).toHaveLength(2)
+    expect(events.map((event) => [event.zoneId, event.direction])).toEqual([
+      ['z1', 'down'],
+      ['vertical', 'right'],
+    ])
+    expect(new Set(events.map((event) => event.trackId)).size).toBe(1)
   })
 
   it('never counts a track that does not cross the counting line', () => {
@@ -208,12 +254,14 @@ describe('TrafficCounter counting contract', () => {
       id: 'z1',
       label: 'Zone 1',
       region: { left: 0.1, top: 0.1, width: 0.8, height: 0.8 },
+      lineOrientation: 'horizontal',
       lineOffset: 0.375, // line at y = 0.4
     }
     const zoneBottom: CountingZone = {
       id: 'z2',
       label: 'Zone 2',
       region: { left: 0.1, top: 0.1, width: 0.8, height: 0.8 },
+      lineOrientation: 'horizontal',
       lineOffset: 0.75, // line at y = 0.7
     }
     const counter = new TrafficCounter([zoneTop, zoneBottom])
@@ -235,6 +283,17 @@ describe('TrafficCounter counting contract', () => {
     const { events } = drive(
       counter,
       ys.map((y) => [carBox(0.95, y)]),
+    )
+
+    expect(events).toHaveLength(0)
+  })
+
+  it('does not count a vertical-line crossing outside the zone vertical extent', () => {
+    const counter = new TrafficCounter([verticalZone])
+    const xs = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
+    const { events } = drive(
+      counter,
+      xs.map((x) => [carBox(x, 0.95)]),
     )
 
     expect(events).toHaveLength(0)
