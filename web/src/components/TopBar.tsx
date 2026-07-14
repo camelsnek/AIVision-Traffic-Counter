@@ -1,6 +1,7 @@
 import type { AnalysisProgress, AnalysisStatus } from '../hooks/useTrafficAnalysis'
+import { getPreprocessingProfile } from '../lib/framePreprocessing'
 import { getModelProfile } from '../lib/modelProfiles'
-import type { EngineInfo } from '../types'
+import type { EngineInfo, PreprocessingProfileId } from '../types'
 
 const statusLabels: Record<AnalysisStatus, string> = {
   idle: 'Load a video',
@@ -15,10 +16,11 @@ const statusLabels: Record<AnalysisStatus, string> = {
 interface TopBarProps {
   status: AnalysisStatus
   engine: EngineInfo | null
+  preprocessingProfileId: PreprocessingProfileId
   progress: AnalysisProgress
 }
 
-export function TopBar({ status, engine, progress }: TopBarProps) {
+export function TopBar({ status, engine, preprocessingProfileId, progress }: TopBarProps) {
   return (
     <header className="topbar">
       <div className="brand">
@@ -53,6 +55,9 @@ export function TopBar({ status, engine, progress }: TopBarProps) {
             {getModelProfile(engine.modelProfileId).label} · {engine.device === 'webgpu' ? 'GPU' : 'CPU'} ·{' '}
             {engine.dtype}
           </span>
+        )}
+        {preprocessingProfileId !== 'standard-v1' && (
+          <span className="chip chip-engine">{getPreprocessingProfile(preprocessingProfileId).label} processing</span>
         )}
         <span className="chip chip-status" role="status" data-status={status}>
           <span className="chip-dot" aria-hidden="true" />

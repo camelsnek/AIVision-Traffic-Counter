@@ -1,5 +1,6 @@
 import type { AnalysisConfig, CountEvent, CountingZone, EngineInfo, SessionCounts } from '../types'
 import { vehicleClasses } from '../types'
+import { getPreprocessingProfile } from './framePreprocessing'
 import { summarizeEvents } from './stats'
 
 export interface SessionExport {
@@ -7,7 +8,12 @@ export interface SessionExport {
   durationSeconds: number
   processedAt: string
   engine: EngineInfo | null
-  config: Pick<AnalysisConfig, 'enginePreference' | 'confidence' | 'samplingFps'>
+  config: Pick<
+    AnalysisConfig,
+    'modelProfileId' | 'enginePreference' | 'preprocessingProfileId' | 'confidence' | 'samplingFps'
+  > & {
+    preprocessingParameters: Readonly<Record<string, number | string>>
+  }
   zones: CountingZone[]
   counts: SessionCounts
   events: CountEvent[]
@@ -32,14 +38,21 @@ export function eventsToCsv(events: readonly CountEvent[], zones: readonly Count
 }
 
 /** One row per zone with direction and class breakdowns, plus a totals row. */
-export function summaryToCsv(events: readonly CountEvent[], zones: readonly CountingZone[]): string {
+export function summaryToCsv(
+  events: readonly CountEvent[],
+  zones: readonly CountingZone[],
+  preprocessingProfileId: AnalysisConfig['preprocessingProfileId'],
+): string {
   const counts = summarizeEvents(events, zones)
-  const rows = [['zone', 'line_orientation', 'total', 'down', 'up', 'left', 'right', ...vehicleClasses]]
+  const rows = [
+    ['zone', 'line_orientation', 'preprocessing_profile', 'total', 'down', 'up', 'left', 'right', ...vehicleClasses],
+  ]
 
   for (const zone of counts.zones) {
     rows.push([
       zone.label,
       zone.lineOrientation,
+      preprocessingProfileId,
       String(zone.total),
       String(zone.byDirection.down),
       String(zone.byDirection.up),
@@ -52,6 +65,7 @@ export function summaryToCsv(events: readonly CountEvent[], zones: readonly Coun
   rows.push([
     'TOTAL',
     '',
+    preprocessingProfileId,
     String(counts.total),
     String(counts.byDirection.down),
     String(counts.byDirection.up),
@@ -76,9 +90,12 @@ export function buildSessionExport(input: {
     processedAt: new Date().toISOString(),
     engine: input.engine,
     config: {
+      modelProfileId: input.config.modelProfileId,
       enginePreference: input.config.enginePreference,
+      preprocessingProfileId: input.config.preprocessingProfileId,
       confidence: input.config.confidence,
       samplingFps: input.config.samplingFps,
+      preprocessingParameters: getPreprocessingProfile(input.config.preprocessingProfileId).parameters,
     },
     zones: input.config.zones,
     counts: summarizeEvents(input.events, input.config.zones),

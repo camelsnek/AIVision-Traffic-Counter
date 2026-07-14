@@ -8,6 +8,7 @@ No video is uploaded to a server.
 
 - Runs local YOLOv10-N or YOLOv10-M ONNX models through Transformers.js.
 - Lets the user select Auto, GPU/WebGPU, or CPU/WebAssembly inference.
+- Offers a versioned, optional Night profile that applies luminance-only CLAHE before model preprocessing.
 - Samples uploaded videos by video timestamp, so results do not depend on playback speed or machine performance.
 - Tracks tentative and confirmed vehicles through brief detection gaps.
 - Counts crossings in all four screen directions exactly once per vehicle and zone.
@@ -45,6 +46,12 @@ Summary CSV and JSON exports preserve each zone's orientation and all four direc
 
 The live `fps` metric is analyzed frames per wall-clock second and includes video seeking, frame preparation, inference, tracking, and rendering. `ms/frame` measures detector work only. Large or highly compressed 4K videos can therefore show lower overall fps even when GPU inference itself is fast.
 
+## Night image processing
+
+**Image processing** defaults to **Standard**, which preserves the existing detector input byte-for-byte. **Night — Experimental** applies luminance-only CLAHE after the configured-zone crop is resized to at most a 640-pixel edge and before the Transformers.js model processor runs. The `night-clahe-v1` profile uses an 8 × 8 tile grid and a contrast limit of 2 while retaining the source chrominance.
+
+The selected profile is fixed for the full analysis. JSON exports include its versioned id and exact parameters; summary CSV includes the profile id on every row. Night processing can expose low-contrast vehicles, but it can also amplify image noise, so compare it against Standard on footage from the intended camera rather than assuming that a brighter input is more accurate.
+
 ## Validation
 
 ```bash
@@ -54,6 +61,8 @@ npm run build
 ```
 
 The test suite covers geometry, event aggregation, exports, and the tracking/counting contracts: horizontal and vertical bidirectional crossings, mixed-orientation zones, one count per track, stationary-object rejection, detection gaps, parallel vehicles, tentative tracks, class voting, and zone bounds.
+
+Pixel-level preprocessing tests additionally cover the Standard identity path, local contrast enhancement, alpha and chroma preservation, non-divisible frame dimensions, malformed inputs, determinism, and exported profile metadata.
 
 ## Counting model
 

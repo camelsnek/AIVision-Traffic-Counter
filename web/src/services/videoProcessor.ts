@@ -83,7 +83,12 @@ export class VideoProcessor {
         }
 
         const inferenceStart = performance.now()
-        const detections = await this.detector.detect(this.video, this.roi, this.config.confidence)
+        const detections = await this.detector.detect(
+          this.video,
+          this.roi,
+          this.config.confidence,
+          this.config.preprocessingProfileId,
+        )
         const inferenceMs = performance.now() - inferenceStart
         const { tracks, events } = this.counter.update(detections, this.video.currentTime)
 

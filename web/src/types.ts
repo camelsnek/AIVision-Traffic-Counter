@@ -12,6 +12,9 @@ export type ModelProfileId = 'onnx-community/yolov10n' | 'onnx-community/yolov10
 /** User-selected inference hardware. Auto prefers WebGPU and falls back to CPU/WASM. */
 export type EnginePreference = 'auto' | 'gpu' | 'cpu'
 
+/** Versioned detector-input transform; profile ids are persisted in session exports. */
+export type PreprocessingProfileId = 'standard-v1' | 'night-clahe-v1'
+
 /** Axis-aligned rectangle, all values normalized to [0, 1] frame space. */
 export interface RectNorm {
   left: number
@@ -81,6 +84,8 @@ export interface CountEvent {
 export interface AnalysisConfig {
   modelProfileId: ModelProfileId
   enginePreference: EnginePreference
+  /** Pixel transform applied after the video crop is resized and before model preprocessing. */
+  preprocessingProfileId: PreprocessingProfileId
   /** Minimum detection confidence, 0..1. */
   confidence: number
   /** Analysis sampling rate in video-time frames per second. */

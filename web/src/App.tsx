@@ -17,7 +17,12 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar status={analysis.status} engine={analysis.engine} progress={analysis.progress} />
+      <TopBar
+        status={analysis.status}
+        engine={analysis.engine}
+        preprocessingProfileId={analysis.config.preprocessingProfileId}
+        progress={analysis.progress}
+      />
       <main className="workspace">
         <section className="stage-column" aria-label="Video stage">
           <VideoStage
@@ -83,6 +88,7 @@ export default function App() {
             gpuAvailable={analysis.gpuAvailable}
             setModelProfile={analysis.setModelProfile}
             setEnginePreference={analysis.setEnginePreference}
+            setPreprocessingProfile={analysis.setPreprocessingProfile}
             setConfidence={analysis.setConfidence}
             setSamplingFps={analysis.setSamplingFps}
           />

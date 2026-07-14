@@ -6,6 +6,7 @@ import ortAsyncifyWasmUrl from '../../vendor/ort/ort-wasm-simd-threaded.asyncify
 import ortPlainMjsUrl from '../../vendor/ort/ort-wasm-simd-threaded.mjs?url'
 import ortPlainWasmUrl from '../../vendor/ort/ort-wasm-simd-threaded.wasm?url'
 import { clamp01, intersectionOverUnion } from '../lib/geometry'
+import { preprocessRgba } from '../lib/framePreprocessing'
 import { getModelProfile } from '../lib/modelProfiles'
 import type {
   Detection,
@@ -13,6 +14,7 @@ import type {
   EngineInfo,
   EnginePreference,
   ModelProfileId,
+  PreprocessingProfileId,
   RectNorm,
   VehicleClass,
 } from '../types'
@@ -131,7 +133,12 @@ export class VehicleDetector {
    * Detects vehicles inside `roi` (normalized full-frame rect) of the current
    * video frame. Returned boxes are normalized to the FULL frame.
    */
-  async detect(video: HTMLVideoElement, roi: RectNorm, minConfidence: number): Promise<Detection[]> {
+  async detect(
+    video: HTMLVideoElement,
+    roi: RectNorm,
+    minConfidence: number,
+    preprocessingProfileId: PreprocessingProfileId,
+  ): Promise<Detection[]> {
     const frameWidth = video.videoWidth
     const frameHeight = video.videoHeight
     if (!frameWidth || !frameHeight) {
@@ -160,7 +167,10 @@ export class VehicleDetector {
     }
     context.drawImage(video, sourceLeft, sourceTop, sourceWidth, sourceHeight, 0, 0, cropWidth, cropHeight)
 
-    const image = RawImage.fromCanvas(this.cropCanvas)
+    const sourceImage = RawImage.fromCanvas(this.cropCanvas)
+    const inputPixels = preprocessRgba(sourceImage.data, cropWidth, cropHeight, preprocessingProfileId)
+    const image =
+      inputPixels === sourceImage.data ? sourceImage : new RawImage(inputPixels, cropWidth, cropHeight, 4)
     const processed = await this.processor(image)
     const outputs = await this.model({ images: processed.pixel_values })
     processed.pixel_values.dispose()

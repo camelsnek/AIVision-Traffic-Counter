@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { summaryToCsv } from '../src/lib/exporters'
+import { buildSessionExport, summaryToCsv } from '../src/lib/exporters'
 import { flowBuckets, summarizeEvents } from '../src/lib/stats'
-import type { CountEvent, CountingZone } from '../src/types'
+import type { AnalysisConfig, CountEvent, CountingZone } from '../src/types'
 
 const zoneA: CountingZone = {
   id: 'z1',
@@ -70,12 +70,47 @@ describe('summaryToCsv', () => {
       event(2, { trackId: 2, zoneId: 'z2', vehicleClass: 'bus', direction: 'left', videoTime: 2 }),
     ]
 
-    expect(summaryToCsv(events, [zoneA, zoneB]).split('\r\n')).toEqual([
-      'zone,line_orientation,total,down,up,left,right,car,truck,bus,motorcycle',
-      'Zone 1,horizontal,1,1,0,0,0,1,0,0,0',
-      'Zone 2,vertical,1,0,0,1,0,0,0,1,0',
-      'TOTAL,,2,1,0,1,0,1,0,1,0',
+    expect(summaryToCsv(events, [zoneA, zoneB], 'night-clahe-v1').split('\r\n')).toEqual([
+      'zone,line_orientation,preprocessing_profile,total,down,up,left,right,car,truck,bus,motorcycle',
+      'Zone 1,horizontal,night-clahe-v1,1,1,0,0,0,1,0,0,0',
+      'Zone 2,vertical,night-clahe-v1,1,0,0,1,0,0,0,1,0',
+      'TOTAL,,night-clahe-v1,2,1,0,1,0,1,0,1,0',
     ])
+  })
+})
+
+describe('buildSessionExport', () => {
+  it('persists the versioned preprocessing profile and exact parameters', () => {
+    const config: AnalysisConfig = {
+      modelProfileId: 'onnx-community/yolov10n',
+      enginePreference: 'cpu',
+      preprocessingProfileId: 'night-clahe-v1',
+      confidence: 0.35,
+      samplingFps: 5,
+      zones: [zoneA],
+    }
+
+    const result = buildSessionExport({
+      fileName: 'night-highway.mp4',
+      durationSeconds: 120,
+      engine: { modelProfileId: config.modelProfileId, device: 'wasm', dtype: 'q8' },
+      config,
+      events: [],
+    })
+
+    expect(result.config).toEqual({
+      modelProfileId: 'onnx-community/yolov10n',
+      enginePreference: 'cpu',
+      preprocessingProfileId: 'night-clahe-v1',
+      confidence: 0.35,
+      samplingFps: 5,
+      preprocessingParameters: {
+        transform: 'luminance-clahe',
+        tileColumns: 8,
+        tileRows: 8,
+        clipLimit: 2,
+      },
+    })
   })
 })
 

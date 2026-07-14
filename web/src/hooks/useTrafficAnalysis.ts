@@ -14,6 +14,7 @@ import type {
   EnginePreference,
   LineOrientation,
   ModelProfileId,
+  PreprocessingProfileId,
   RectNorm,
   SessionCounts,
   TrackSnapshot,
@@ -52,6 +53,7 @@ export interface TrafficAnalysis {
   config: AnalysisConfig
   setModelProfile(modelProfileId: ModelProfileId): void
   setEnginePreference(preference: EnginePreference): void
+  setPreprocessingProfile(preprocessingProfileId: PreprocessingProfileId): void
   setConfidence(confidence: number): void
   setSamplingFps(samplingFps: number): void
 
@@ -92,6 +94,7 @@ const MAX_OVERLAY_EDGE = 1600
 const DEFAULT_CONFIG: AnalysisConfig = {
   modelProfileId: 'onnx-community/yolov10n',
   enginePreference: 'auto',
+  preprocessingProfileId: 'standard-v1',
   confidence: 0.35,
   samplingFps: 10,
   zones: [],
@@ -333,6 +336,10 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     setConfig((current) => ({ ...current, enginePreference }))
   }, [])
 
+  const setPreprocessingProfile = useCallback((preprocessingProfileId: PreprocessingProfileId) => {
+    setConfig((current) => ({ ...current, preprocessingProfileId }))
+  }, [])
+
   const setConfidence = useCallback((confidence: number) => {
     setConfig((current) => ({ ...current, confidence }))
   }, [])
@@ -399,6 +406,7 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     config,
     setModelProfile,
     setEnginePreference,
+    setPreprocessingProfile,
     setConfidence,
     setSamplingFps,
     zoneEditing,
@@ -419,7 +427,11 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     events,
     exportEventsCsv: () => downloadTextFile(`${exportBaseName}-events.csv`, 'text/csv', eventsToCsv(events, config.zones)),
     exportSummaryCsv: () =>
-      downloadTextFile(`${exportBaseName}-summary.csv`, 'text/csv', summaryToCsv(events, config.zones)),
+      downloadTextFile(
+        `${exportBaseName}-summary.csv`,
+        'text/csv',
+        summaryToCsv(events, config.zones, config.preprocessingProfileId),
+      ),
     exportJson: () =>
       downloadTextFile(
         `${exportBaseName}-session.json`,

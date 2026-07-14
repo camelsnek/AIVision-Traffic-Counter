@@ -1,7 +1,8 @@
 import { useId } from 'react'
 
+import { getPreprocessingProfile, preprocessingProfiles } from '../lib/framePreprocessing'
 import { getModelProfile, modelProfiles } from '../lib/modelProfiles'
-import type { AnalysisConfig, EnginePreference, ModelProfileId } from '../types'
+import type { AnalysisConfig, EnginePreference, ModelProfileId, PreprocessingProfileId } from '../types'
 
 interface ConfigPanelProps {
   config: AnalysisConfig
@@ -10,6 +11,7 @@ interface ConfigPanelProps {
   gpuAvailable: boolean | null
   setModelProfile(modelProfileId: ModelProfileId): void
   setEnginePreference(preference: EnginePreference): void
+  setPreprocessingProfile(preprocessingProfileId: PreprocessingProfileId): void
   setConfidence(confidence: number): void
   setSamplingFps(samplingFps: number): void
 }
@@ -20,11 +22,13 @@ export function ConfigPanel({
   gpuAvailable,
   setModelProfile,
   setEnginePreference,
+  setPreprocessingProfile,
   setConfidence,
   setSamplingFps,
 }: ConfigPanelProps) {
   const modelId = useId()
   const engineId = useId()
+  const preprocessingId = useId()
   const confidenceId = useId()
   const samplingId = useId()
   const confidencePct = ((config.confidence - 0.2) / 0.4) * 100
@@ -92,6 +96,30 @@ export function ConfigPanel({
           <option value="cpu">CPU — WebAssembly</option>
         </select>
         <p className="field-hint">{engineHint}</p>
+      </div>
+      <div className="field">
+        <div className="field-head">
+          <label htmlFor={preprocessingId}>Image processing</label>
+        </div>
+        <select
+          id={preprocessingId}
+          className="select"
+          value={config.preprocessingProfileId}
+          disabled={disabled}
+          onChange={(event) => {
+            const profile = preprocessingProfiles.find((candidate) => candidate.id === event.target.value)
+            if (profile) {
+              setPreprocessingProfile(profile.id)
+            }
+          }}
+        >
+          {preprocessingProfiles.map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.label}{profile.id === 'night-clahe-v1' ? ' — Experimental' : ''}
+            </option>
+          ))}
+        </select>
+        <p className="field-hint">{getPreprocessingProfile(config.preprocessingProfileId).description}</p>
       </div>
       <div className="field">
         <div className="field-head">
