@@ -2,17 +2,17 @@ import { TrafficCounter } from '../lib/trafficCounter'
 import { clampRect, padRect, rectUnion } from '../lib/geometry'
 import { RollingCompletionRate } from '../lib/rollingCompletionRate'
 import type { AnalysisConfig, CountEvent, RectNorm, TrackSnapshot } from '../types'
-import type { DetectorResult, DetectorTimings } from './vehicleDetector'
+import type { DetectorResult, DetectorTimings, PreparedDetectorFrame } from './vehicleDetector'
 
 export interface DetectorRunner {
-  detect(
+  prepare(
     source: CanvasImageSource,
     frameWidth: number,
     frameHeight: number,
     roi: RectNorm,
     minConfidence: number,
     preprocessingProfileId: AnalysisConfig['preprocessingProfileId'],
-  ): Promise<DetectorResult>
+  ): PreparedDetectorFrame
 }
 
 export interface FrameTimings {
@@ -145,33 +145,71 @@ export class VideoProcessor {
   }
 
   /**
-   * Modern browsers expose immutable VideoFrame snapshots. A bounded producer
-   * can therefore continue seeking without mutating frames still being
-   * analyzed, while the consumer preserves strict timestamp commit order.
+   * Immutable snapshots let preparation for N+1 overlap inference for N.
+   * Inference, tracking, counting, and publication still commit strictly in
+   * source-timestamp order.
    */
   private async runSnapshotPipeline(duration: number, stepSeconds: number): Promise<void> {
     const queue = new FrameSampleQueue(2)
     const completionRate = new RollingCompletionRate()
     this.snapshotQueue = queue
     const producer = this.produceSnapshotFrames(queue, duration, stepSeconds)
+    let current: PreparedFrameSample | null = null
 
     try {
-      while (!this.stopped) {
-        const sample = await queue.take()
-        if (!sample) {
+      current = await this.takePreparedSnapshot(queue)
+      while (current) {
+        const active = current
+        current = null
+        const inference = active.prepared.infer()
+        let next: PreparedFrameSample | null = null
+        let preparationError: unknown = null
+
+        if (!this.stopped) {
+          try {
+            next = await this.takePreparedSnapshot(queue)
+          } catch (error) {
+            preparationError = error
+          }
+        }
+
+        try {
+          const detectorResult = await inference
+          this.commitFrame(
+            active.sample,
+            detectorResult,
+            duration,
+            completionRate,
+            active.sample.source,
+          )
+        } catch (error) {
+          releasePreparedFrame(next)
+          throw error
+        } finally {
+          active.sample.source.close()
+        }
+
+        if (preparationError) {
+          releasePreparedFrame(next)
+          throw preparationError
+        }
+        if (this.stopped) {
+          releasePreparedFrame(next)
           break
         }
-        await this.analyzeSnapshot(sample, duration, completionRate)
+        current = next
       }
       if (this.stopped) {
         queue.cancel()
       }
       await producer
     } catch (error) {
+      releasePreparedFrame(current)
       queue.cancel()
       await producer
       throw error
     } finally {
+      releasePreparedFrame(current)
       queue.cancel()
       if (this.snapshotQueue === queue) {
         this.snapshotQueue = null
@@ -214,23 +252,29 @@ export class VideoProcessor {
     }
   }
 
-  private async analyzeSnapshot(
-    sample: FrameSample,
-    duration: number,
-    completionRate: RollingCompletionRate,
-  ): Promise<void> {
+  private async takePreparedSnapshot(
+    queue: FrameSampleQueue,
+  ): Promise<PreparedFrameSample | null> {
+    const sample = await queue.take()
+    if (!sample) {
+      return null
+    }
+
     try {
-      const detectorResult = await this.detector.detect(
-        sample.source,
-        sample.frameWidth,
-        sample.frameHeight,
-        this.roi,
-        this.config.confidence,
-        this.config.preprocessingProfileId,
-      )
-      this.commitFrame(sample, detectorResult, duration, completionRate, sample.source)
-    } finally {
+      return {
+        sample,
+        prepared: this.detector.prepare(
+          sample.source,
+          sample.frameWidth,
+          sample.frameHeight,
+          this.roi,
+          this.config.confidence,
+          this.config.preprocessingProfileId,
+        ),
+      }
+    } catch (error) {
       sample.source.close()
+      throw error
     }
   }
 
@@ -257,7 +301,7 @@ export class VideoProcessor {
         seekMs: seek.ms,
       }
       const frameCaptureMs = this.capturePresentationFrame(this.video)
-      const detectionPromise = this.detector.detect(
+      const prepared = this.detector.prepare(
         this.video,
         sample.frameWidth,
         sample.frameHeight,
@@ -265,6 +309,7 @@ export class VideoProcessor {
         this.config.confidence,
         this.config.preprocessingProfileId,
       )
+      const detectionPromise = prepared.infer()
 
       const nextTime = time + stepSeconds
       const nextSeek =
@@ -364,6 +409,19 @@ interface FrameSampleMetadata {
 
 interface FrameSample extends FrameSampleMetadata {
   source: VideoFrame
+}
+
+interface PreparedFrameSample {
+  readonly sample: FrameSample
+  readonly prepared: PreparedDetectorFrame
+}
+
+function releasePreparedFrame(frame: PreparedFrameSample | null) {
+  if (!frame) {
+    return
+  }
+  frame.prepared.dispose()
+  frame.sample.source.close()
 }
 
 class FrameSampleQueue {

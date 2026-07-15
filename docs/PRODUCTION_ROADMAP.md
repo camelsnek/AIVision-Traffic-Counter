@@ -329,7 +329,7 @@ These are workstation results, not Dell PC16250 claims. Initial Dell and primary
 
 ## Second safe WebGPU optimization slice
 
-The next slice adds a bounded two-frame immutable snapshot queue, starts the next monotonic seek as soon as each snapshot is captured, and keeps detector calls and all counting state sequential. It also:
+The next slice adds a bounded two-frame immutable snapshot queue, starts the next monotonic seek as soon as each snapshot is captured, and keeps model execution and all counting state sequential. It also:
 
 - bypasses the CPU-oriented `willReadFrequently` canvas hint on the WebGPU detector path;
 - holds the current immutable frame until detector completion so presentation work can be skipped safely;
@@ -338,7 +338,15 @@ The next slice adds a bounded two-frame immutable snapshot queue, starts the nex
 
 One same-session, single-run WebGPU check of the 15-second excerpt at 10 sampling fps moved from 20.4 seconds before this slice to 18.8 seconds after it, with 22 events in both runs. The complete exported event sequence—track IDs, zones, classes, directions, and video timestamps—matched exactly. This is regression evidence, not a controlled hardware performance claim; repeated warm runs on the deployment workstation remain required.
 
-### Field measurements after the first optimization slice — 2026-07-15
+## Prepared detector overlap trial
+
+The detector now owns two isolated input-buffer/Tensor slots because Transformers.js and ONNX Runtime retain aliases to the supplied `Float32Array`. A slot remains leased until its model promise settles. The snapshot consumer starts WebGPU inference for frame N, then crops, reads back, preprocesses, and constructs the tensor for N+1 in the other slot. It does not start inference N+1 until N has completed and committed. Stop, error, and detector-disposal paths release prepared leases and wait for active inference before disposing tensors or the model.
+
+Telemetry reports preparation separately and computes detector total from measured stage work, excluding intentional prepared-queue wait. The existing 16-completion rolling analysis rate remains a presentation estimator rather than an assertion that the underlying sample cadence is constant.
+
+A local 15-second WebGPU regression run preserved the exact 22-event sequence from the reference export. That run took 24.4 seconds versus 18.8 seconds in an earlier browser session, with both ONNX and seek timings also slower; it therefore does **not** demonstrate a performance win or isolate the overlap as the cause. Treat this as a field-testable trial until same-session alternating serial/overlap runs on the deployment workstation establish whether hiding preparation outweighs canvas/GPU contention.
+
+### Field measurements — 2026-07-15
 
 The operator tested a 30-second video on the Dell and reported the following live metrics:
 
@@ -421,7 +429,7 @@ Keep the existing seek path as the reference until the new path matches requeste
 ### Perf 4 — remove avoidable copies and repeated UI work
 
 - **Implemented:** replace the generic image processor with a direct pooled tensor builder for the current fixed 640×640 YOLO models, covered by layout/padding tests and real-clip event parity.
-- **Implemented:** reuse the detector tensor buffer and frame-presentation canvases instead of allocating multiple RGB/float/layout/batch buffers per sample.
+- **Implemented:** use two bounded detector tensor slots for N/N+1 preparation instead of allocating the former generic RGB/float/layout/batch intermediates per sample.
 - Investigate ONNX/WebGPU tensor I/O binding where the supported runtime can avoid CPU round trips.
 - **Implemented:** cache live event aggregates and recompute them only when an event is emitted.
 - Avoid cloning full track trails for consumers that do not need them.

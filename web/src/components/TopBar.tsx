@@ -45,7 +45,17 @@ export function TopBar({ status, engine, preprocessingProfileId, progress }: Top
             <span className="stat" title="Rolling completed-sample rate over up to 16 analysis completions">
               <span className="stat-value">{progress.throughputFps.toFixed(1)}</span> analysis fps
             </span>
-            <span className="stat" title="Full detector path: capture, preprocessing, ONNX, and postprocessing">
+            <span className="stat" title="Crop, pixel readback, image preprocessing, and tensor construction">
+              <span className="stat-value">
+                {Math.round(
+                  progress.timings.detector.captureMs +
+                    progress.timings.detector.preprocessingMs +
+                    progress.timings.detector.tensorMs,
+                )}
+              </span>{' '}
+              ms prep
+            </span>
+            <span className="stat" title="Measured detector work, excluding intentional prepared-frame queue time">
               <span className="stat-value">{Math.round(progress.timings.detector.totalMs)}</span> ms detector
             </span>
             <span className="stat" title="ONNX model execution only">

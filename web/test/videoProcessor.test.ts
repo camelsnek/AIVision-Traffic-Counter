@@ -88,16 +88,22 @@ describe('VideoProcessor seek pipeline', () => {
     const detectionResults = Array.from({ length: 3 }, () => Promise.withResolvers<DetectorResult>())
     let detectionIndex = 0
     const detector = {
-      detect(source: CanvasImageSource, frameWidth: number, frameHeight: number) {
+      prepare(source: CanvasImageSource, frameWidth: number, frameHeight: number) {
         const index = detectionIndex++
         const sampleTime = (source as unknown as FakeVideo).currentTime
         expect([frameWidth, frameHeight]).toEqual([1920, 1080])
-        log.push(`detect-start:${sampleTime.toFixed(4)}`)
-        detectionStarts[index].resolve()
-        return detectionResults[index].promise.then((result) => {
-          log.push(`detect-end:${sampleTime.toFixed(4)}`)
-          return result
-        })
+        log.push(`prepare:${sampleTime.toFixed(4)}`)
+        return {
+          infer() {
+            log.push(`infer-start:${sampleTime.toFixed(4)}`)
+            detectionStarts[index].resolve()
+            return detectionResults[index].promise.then((result) => {
+              log.push(`infer-end:${sampleTime.toFixed(4)}`)
+              return result
+            })
+          },
+          dispose() {},
+        }
       },
     }
     const frames: { videoTime: number; seekMs: number; frameIntervalMs: number }[] = []
@@ -141,9 +147,9 @@ describe('VideoProcessor seek pipeline', () => {
     expect(frames.map((frame) => frame.videoTime)).toEqual([0.0001, 0.2, 0.4])
     expect(frames[0].frameIntervalMs).toBe(0)
     expect(frames.slice(1).every((frame) => frame.seekMs >= 0 && frame.frameIntervalMs > 0)).toBe(true)
-    expect(log.indexOf('seek:0.2000')).toBeLessThan(log.indexOf('detect-end:0.0001'))
-    expect(log.indexOf('frame:0.0001')).toBeLessThan(log.indexOf('detect-start:0.2000'))
-    expect(log.indexOf('seek:0.4000')).toBeLessThan(log.indexOf('detect-end:0.2000'))
+    expect(log.indexOf('seek:0.2000')).toBeLessThan(log.indexOf('infer-end:0.0001'))
+    expect(log.indexOf('frame:0.0001')).toBeLessThan(log.indexOf('infer-start:0.2000'))
+    expect(log.indexOf('seek:0.4000')).toBeLessThan(log.indexOf('infer-end:0.2000'))
     expect(displayCanvas.draws).toHaveLength(3)
     expect(presentationCanvas.draws).toHaveLength(3)
   })
@@ -180,18 +186,27 @@ describe('VideoProcessor seek pipeline', () => {
     }
     vi.stubGlobal('VideoFrame', FakeVideoFrame)
 
+    const preparationStarts = Array.from({ length: 3 }, () => Promise.withResolvers<void>())
     const detectionStarts = Array.from({ length: 3 }, () => Promise.withResolvers<void>())
     const detectionResults = Array.from({ length: 3 }, () => Promise.withResolvers<DetectorResult>())
-    const detectionTimes: number[] = []
+    const preparationTimes: number[] = []
+    const inferenceTimes: number[] = []
     let detectionIndex = 0
     const detector = {
-      detect(source: CanvasImageSource, frameWidth: number, frameHeight: number) {
+      prepare(source: CanvasImageSource, frameWidth: number, frameHeight: number) {
         const index = detectionIndex++
         const sampleTime = (source as unknown as FakeVideoFrame).sampleTime
         expect([frameWidth, frameHeight]).toEqual([1920, 1080])
-        detectionTimes.push(sampleTime)
-        detectionStarts[index].resolve()
-        return detectionResults[index].promise
+        preparationTimes.push(sampleTime)
+        preparationStarts[index].resolve()
+        return {
+          infer() {
+            inferenceTimes.push(sampleTime)
+            detectionStarts[index].resolve()
+            return detectionResults[index].promise
+          },
+          dispose() {},
+        }
       },
     }
     const publishedTimes: number[] = []
@@ -217,11 +232,15 @@ describe('VideoProcessor seek pipeline', () => {
     const run = processor.run()
     await detectionStarts[0].promise
     await thirdSeekStarted.promise
-    expect(detectionTimes).toEqual([0.0001])
+    expect(preparationTimes).toEqual([0.0001, 0.2])
+    expect(inferenceTimes).toEqual([0.0001])
 
     nowMs = 1
     detectionResults[0].resolve(emptyResult)
     await detectionStarts[1].promise
+    await preparationStarts[2].promise
+    expect(preparationTimes).toEqual([0.0001, 0.2, 0.4])
+    expect(inferenceTimes).toEqual([0.0001, 0.2])
     nowMs = 10
     detectionResults[1].resolve(emptyResult)
     await detectionStarts[2].promise
@@ -229,7 +248,7 @@ describe('VideoProcessor seek pipeline', () => {
     detectionResults[2].resolve(emptyResult)
     await run
 
-    expect(detectionTimes).toEqual([0.0001, 0.2, 0.4])
+    expect(inferenceTimes).toEqual([0.0001, 0.2, 0.4])
     expect(publishedTimes).toEqual([0.0001, 0.2, 0.4])
     expect(presentationStates).toEqual([true, false, true])
     expect(displayCanvas.draws).toHaveLength(2)
@@ -237,6 +256,82 @@ describe('VideoProcessor seek pipeline', () => {
     expect(capturedFrames).toHaveLength(4)
     expect(capturedFrames.every((frame) => frame.closed)).toBe(true)
     expect(displayCanvas.clears).toHaveLength(0)
+  })
+
+  it('releases a prepared look-ahead frame when stopped during active inference', async () => {
+    const presentationCanvas = new FakeCanvas()
+    const displayCanvas = new FakeCanvas()
+    vi.stubGlobal('document', { createElement: () => presentationCanvas })
+    vi.stubGlobal('window', { setTimeout: () => 1, clearTimeout: () => undefined })
+
+    const video = new FakeVideo()
+    const capturedFrames: Array<{ closed: boolean }> = []
+    class FakeVideoFrame {
+      closed = false
+
+      constructor() {
+        capturedFrames.push(this)
+      }
+
+      close() {
+        this.closed = true
+      }
+    }
+    vi.stubGlobal('VideoFrame', FakeVideoFrame)
+
+    const activeInference = Promise.withResolvers<DetectorResult>()
+    const lookAheadPrepared = Promise.withResolvers<void>()
+    const disposeLookAhead = vi.fn()
+    let preparationIndex = 0
+    const detector = {
+      prepare() {
+        const index = preparationIndex++
+        if (index === 1) {
+          lookAheadPrepared.resolve()
+        }
+        return {
+          infer() {
+            if (index !== 0) {
+              return Promise.reject(new Error('Look-ahead inference must not start after stop.'))
+            }
+            return activeInference.promise
+          },
+          dispose() {
+            if (index === 1) {
+              disposeLookAhead()
+            }
+          },
+        }
+      },
+    }
+    const publishedTimes: number[] = []
+    let endReason: string | null = null
+    const processor = new VideoProcessor(
+      video as unknown as HTMLVideoElement,
+      displayCanvas as unknown as HTMLCanvasElement,
+      detector,
+      config,
+      {
+        onFrame: (update) => publishedTimes.push(update.videoTime),
+        onDone: (reason) => {
+          endReason = reason
+        },
+        onError: (error) => {
+          throw error
+        },
+      },
+    )
+
+    const run = processor.run()
+    await lookAheadPrepared.promise
+    processor.stop()
+    activeInference.resolve(emptyResult)
+    await run
+
+    expect(endReason).toBe('stopped')
+    expect(publishedTimes).toEqual([0.0001])
+    expect(disposeLookAhead).toHaveBeenCalledOnce()
+    expect(capturedFrames.every((frame) => frame.closed)).toBe(true)
   })
 
 })

@@ -42,10 +42,10 @@ Summary CSV and JSON exports preserve each zone's orientation and all four direc
 - **GPU — WebGPU** requires a current browser and working hardware acceleration. The option is marked unavailable when the browser cannot obtain an adapter. An explicit GPU choice never silently runs on the CPU.
 - **CPU — WebAssembly** uses the quantized model in the most compatible single-threaded runtime. It is reliable but normally slower.
 - **YOLOv10-N** is the performance-oriented model; YOLOv10-M is substantially heavier.
-- **Sampling rate** controls how many video timestamps are analyzed. Reducing it from 10 to 5 fps roughly halves the number of detector calls. Snapshot-capable browsers keep a bounded queue of up to two immutable decoded frames ahead of the detector; detector calls, tracking, and counting remain strictly ordered.
+- **Sampling rate** controls how many video timestamps are analyzed. Reducing it from 10 to 5 fps roughly halves the number of detector calls. Snapshot-capable browsers keep a bounded queue of immutable decoded frames and two isolated tensor slots: frame N+1 is cropped, read back, preprocessed, and converted to its tensor while WebGPU infers frame N. Model execution, tracking, counting, and publication remain strictly sequential and timestamp ordered.
 - Visible frame and overlay publication is capped at 20 wall-clock fps independently of analytical sampling. Every configured timestamp is still detected and counted, while event frames and the final frame are always published.
 
-The live metrics separate **analysis fps** (a rolling completed-sample rate), **detector** time (crop through postprocessing), pure **ONNX** execution, and **seek** time. Frame preparation can run ahead of detector execution, so seek and detector milliseconds intentionally overlap and must not be added together.
+The live metrics separate **analysis fps** (a rolling completed-sample rate over 16 completions), **prep** time (crop, readback, preprocessing, and tensor construction), measured **detector** work, pure **ONNX** execution, and **seek** time. Prepared-frame work intentionally overlaps ONNX and seeking, so the stage milliseconds must not be added together. The rolling rate deliberately suppresses one-frame peaks; it makes the displayed estimate steadier without hiding actual whole-run completion time.
 
 ## Night image processing
 

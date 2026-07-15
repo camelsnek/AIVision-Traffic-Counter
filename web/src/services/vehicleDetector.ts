@@ -70,7 +70,7 @@ export interface DetectorTimings {
   inferenceMs: number
   /** Output parsing, duplicate suppression, and tensor disposal. */
   postprocessMs: number
-  /** Complete detector call, from crop capture through postprocessing. */
+  /** Sum of capture, preprocessing, tensor, inference, and postprocessing work. */
   totalMs: number
 }
 
@@ -79,15 +79,25 @@ export interface DetectorResult {
   timings: DetectorTimings
 }
 
+export interface PreparedDetectorFrame {
+  infer(): Promise<DetectorResult>
+  dispose(): void
+}
+
 interface CapturedFrame {
   cropWidth: number
   cropHeight: number
   roi: RectNorm
   minConfidence: number
-  totalStart: number
   captureMs: number
   preprocessingMs: number
   tensorMs: number
+}
+
+interface DetectorInputSlot {
+  readonly buffer: Float32Array
+  readonly tensor: Tensor
+  leased: boolean
 }
 
 /**
@@ -103,8 +113,10 @@ export class VehicleDetector {
   private readonly labelById: Map<number, string>
   private readonly cropCanvas = document.createElement('canvas')
   private readonly cropContext: CanvasRenderingContext2D
-  private readonly inputBuffer = new Float32Array(3 * YOLO_INPUT_EDGE * YOLO_INPUT_EDGE)
-  private readonly inputTensor = new Tensor('float32', this.inputBuffer, [1, 3, YOLO_INPUT_EDGE, YOLO_INPUT_EDGE])
+  private readonly inputSlots = createInputSlots(2)
+  private inferenceRunning = false
+  private disposePromise: Promise<void> | null = null
+  private readonly idleWaiters: Array<() => void> = []
 
   private constructor(info: EngineInfo, model: PreTrainedModel) {
     const cropContext = this.cropCanvas.getContext('2d')
@@ -139,8 +151,18 @@ export class VehicleDetector {
     }
   }
 
-  async dispose(): Promise<void> {
-    this.inputTensor.dispose()
+  dispose(): Promise<void> {
+    this.disposePromise ??= this.disposeWhenIdle()
+    return this.disposePromise
+  }
+
+  private async disposeWhenIdle(): Promise<void> {
+    if (this.inputSlots.some((slot) => slot.leased)) {
+      await new Promise<void>((resolve) => this.idleWaiters.push(resolve))
+    }
+    for (const slot of this.inputSlots) {
+      slot.tensor.dispose()
+    }
     await this.model.dispose()
   }
 
@@ -165,110 +187,181 @@ export class VehicleDetector {
   }
 
   /**
-   * Captures pixels from an immutable or currently stable frame synchronously,
-   * then performs model work asynchronously. Callers may release a VideoFrame
-   * or advance an HTMLVideoElement as soon as this method returns its promise.
+   * Captures and prepares pixels synchronously into a leased tensor slot.
+   * The source may be released when this method returns; the lease remains
+   * owned by the returned frame until inference settles or it is disposed.
    */
-  detect(
+  prepare(
     source: CanvasImageSource,
     frameWidth: number,
     frameHeight: number,
     roi: RectNorm,
     minConfidence: number,
     preprocessingProfileId: PreprocessingProfileId,
-  ): Promise<DetectorResult> {
-    const totalStart = performance.now()
+  ): PreparedDetectorFrame {
     if (!frameWidth || !frameHeight) {
       throw new Error('Video frame is not ready yet.')
     }
 
-    const sourceLeft = Math.round(roi.left * frameWidth)
-    const sourceTop = Math.round(roi.top * frameHeight)
-    const sourceWidth = Math.max(1, Math.round(roi.width * frameWidth))
-    const sourceHeight = Math.max(1, Math.round(roi.height * frameHeight))
+    const slot = this.acquireInputSlot()
+    try {
+      const sourceLeft = Math.round(roi.left * frameWidth)
+      const sourceTop = Math.round(roi.top * frameHeight)
+      const sourceWidth = Math.max(1, Math.round(roi.width * frameWidth))
+      const sourceHeight = Math.max(1, Math.round(roi.height * frameHeight))
 
-    const scale = MAX_CROP_EDGE / Math.max(sourceWidth, sourceHeight)
-    const cropWidth = Math.max(1, Math.round(sourceWidth * scale))
-    const cropHeight = Math.max(1, Math.round(sourceHeight * scale))
+      const scale = MAX_CROP_EDGE / Math.max(sourceWidth, sourceHeight)
+      const cropWidth = Math.max(1, Math.round(sourceWidth * scale))
+      const cropHeight = Math.max(1, Math.round(sourceHeight * scale))
 
-    if (this.cropCanvas.width !== cropWidth) {
-      this.cropCanvas.width = cropWidth
+      if (this.cropCanvas.width !== cropWidth) {
+        this.cropCanvas.width = cropWidth
+      }
+      if (this.cropCanvas.height !== cropHeight) {
+        this.cropCanvas.height = cropHeight
+      }
+
+      const captureStart = performance.now()
+      this.cropContext.drawImage(
+        source,
+        sourceLeft,
+        sourceTop,
+        sourceWidth,
+        sourceHeight,
+        0,
+        0,
+        cropWidth,
+        cropHeight,
+      )
+      const sourcePixels = this.cropContext.getImageData(0, 0, cropWidth, cropHeight).data
+      const captureMs = performance.now() - captureStart
+
+      const preprocessingStart = performance.now()
+      const inputPixels = preprocessRgba(
+        sourcePixels,
+        cropWidth,
+        cropHeight,
+        preprocessingProfileId,
+      )
+      const preprocessingMs = performance.now() - preprocessingStart
+
+      const tensorStart = performance.now()
+      fillYoloInput(inputPixels, cropWidth, cropHeight, slot.buffer)
+      const tensorMs = performance.now() - tensorStart
+      const frame: CapturedFrame = {
+        cropWidth,
+        cropHeight,
+        roi,
+        minConfidence,
+        captureMs,
+        preprocessingMs,
+        tensorMs,
+      }
+      let state: 'prepared' | 'running' | 'released' = 'prepared'
+
+      return {
+        infer: () => {
+          if (state !== 'prepared') {
+            return Promise.reject(new Error('A prepared detector frame can only be inferred once.'))
+          }
+          state = 'running'
+          return this.detectCaptured(frame, slot.tensor).finally(() => {
+            state = 'released'
+            this.releaseInputSlot(slot)
+          })
+        },
+        dispose: () => {
+          if (state === 'prepared') {
+            state = 'released'
+            this.releaseInputSlot(slot)
+          }
+        },
+      }
+    } catch (error) {
+      this.releaseInputSlot(slot)
+      throw error
     }
-    if (this.cropCanvas.height !== cropHeight) {
-      this.cropCanvas.height = cropHeight
-    }
-
-    const captureStart = performance.now()
-    this.cropContext.drawImage(
-      source,
-      sourceLeft,
-      sourceTop,
-      sourceWidth,
-      sourceHeight,
-      0,
-      0,
-      cropWidth,
-      cropHeight,
-    )
-    const sourcePixels = this.cropContext.getImageData(0, 0, cropWidth, cropHeight).data
-    const captureMs = performance.now() - captureStart
-
-    const preprocessingStart = performance.now()
-    const inputPixels = preprocessRgba(sourcePixels, cropWidth, cropHeight, preprocessingProfileId)
-    const preprocessingMs = performance.now() - preprocessingStart
-
-    const tensorStart = performance.now()
-    fillYoloInput(inputPixels, cropWidth, cropHeight, this.inputBuffer)
-    const tensorMs = performance.now() - tensorStart
-
-    return this.detectCaptured({
-      cropWidth,
-      cropHeight,
-      roi,
-      minConfidence,
-      totalStart,
-      captureMs,
-      preprocessingMs,
-      tensorMs,
-    })
   }
 
-  private async detectCaptured(frame: CapturedFrame): Promise<DetectorResult> {
-    const inferenceStart = performance.now()
-    const outputs = await this.model({ images: this.inputTensor })
-    const inferenceMs = performance.now() - inferenceStart
-
-    const postprocessStart = performance.now()
-    const output0 = 'output0' in outputs ? outputs.output0 : null
-    if (!(output0 instanceof Tensor)) {
-      throw new Error('The YOLO model returned an unexpected output.')
+  private async detectCaptured(
+    frame: CapturedFrame,
+    inputTensor: Tensor,
+  ): Promise<DetectorResult> {
+    if (this.inferenceRunning) {
+      throw new Error('Detector inference must remain sequential.')
     }
+    this.inferenceRunning = true
 
-    let detections: Detection[]
     try {
-      detections = suppressDuplicates(
-        this.parsePredictions(output0, {
-          inputWidth: frame.cropWidth,
-          inputHeight: frame.cropHeight,
-          roi: frame.roi,
-          minConfidence: frame.minConfidence,
-        }),
-      )
-    } finally {
-      output0.dispose()
-    }
-    const postprocessMs = performance.now() - postprocessStart
+      const inferenceStart = performance.now()
+      const outputs = await this.model({ images: inputTensor })
+      const inferenceMs = performance.now() - inferenceStart
 
-    return {
-      detections,
-      timings: {
-        captureMs: frame.captureMs,
-        preprocessingMs: frame.preprocessingMs,
-        tensorMs: frame.tensorMs,
-        inferenceMs,
-        postprocessMs,
-        totalMs: performance.now() - frame.totalStart,
-      },
+      const postprocessStart = performance.now()
+      const output0 = 'output0' in outputs ? outputs.output0 : null
+      if (!(output0 instanceof Tensor)) {
+        throw new Error('The YOLO model returned an unexpected output.')
+      }
+
+      let detections: Detection[]
+      try {
+        detections = suppressDuplicates(
+          this.parsePredictions(output0, {
+            inputWidth: frame.cropWidth,
+            inputHeight: frame.cropHeight,
+            roi: frame.roi,
+            minConfidence: frame.minConfidence,
+          }),
+        )
+      } finally {
+        output0.dispose()
+      }
+      const postprocessMs = performance.now() - postprocessStart
+      const totalMs =
+        frame.captureMs +
+        frame.preprocessingMs +
+        frame.tensorMs +
+        inferenceMs +
+        postprocessMs
+
+      return {
+        detections,
+        timings: {
+          captureMs: frame.captureMs,
+          preprocessingMs: frame.preprocessingMs,
+          tensorMs: frame.tensorMs,
+          inferenceMs,
+          postprocessMs,
+          totalMs,
+        },
+      }
+    } finally {
+      this.inferenceRunning = false
+    }
+  }
+
+  private acquireInputSlot(): DetectorInputSlot {
+    if (this.disposePromise) {
+      throw new Error('The detector is being disposed.')
+    }
+    for (const slot of this.inputSlots) {
+      if (!slot.leased) {
+        slot.leased = true
+        return slot
+      }
+    }
+    throw new Error('Detector preparation exceeded its bounded two-frame capacity.')
+  }
+
+  private releaseInputSlot(slot: DetectorInputSlot) {
+    slot.leased = false
+    for (const candidate of this.inputSlots) {
+      if (candidate.leased) {
+        return
+      }
+    }
+    for (const resolve of this.idleWaiters.splice(0)) {
+      resolve()
     }
   }
 
@@ -344,6 +437,17 @@ async function resolveDevice(preference: EnginePreference): Promise<EngineDevice
     )
   }
   return gpuAvailable ? 'webgpu' : 'wasm'
+}
+
+function createInputSlots(count: number): DetectorInputSlot[] {
+  return Array.from({ length: count }, () => {
+    const buffer = new Float32Array(3 * YOLO_INPUT_EDGE * YOLO_INPUT_EDGE)
+    return {
+      buffer,
+      tensor: new Tensor('float32', buffer, [1, 3, YOLO_INPUT_EDGE, YOLO_INPUT_EDGE]),
+      leased: false,
+    }
+  })
 }
 
 function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
