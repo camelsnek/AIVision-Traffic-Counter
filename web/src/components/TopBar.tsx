@@ -8,6 +8,7 @@ const statusLabels: Record<AnalysisStatus, string> = {
   ready: 'Ready',
   loading: 'Loading model…',
   running: 'Analyzing…',
+  paused: 'Paused',
   stopped: 'Stopped',
   complete: 'Complete',
   error: 'Error',

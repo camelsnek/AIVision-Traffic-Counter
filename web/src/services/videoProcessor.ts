@@ -81,6 +81,8 @@ export class VideoProcessor {
   private lastPresentationAt: number | null = null
   private stopped = false
   private running = false
+  private paused = false
+  private resumeWaiters: Array<() => void> = []
 
   constructor(
     video: HTMLVideoElement,
@@ -138,10 +140,31 @@ export class VideoProcessor {
     }
   }
 
+  /** Pauses before the next detector call while preserving the current session. */
+  pause(): boolean {
+    if (!this.running || this.stopped || this.paused) {
+      return false
+    }
+    this.paused = true
+    return true
+  }
+
+  /** Resumes a paused processor from its next prepared video timestamp. */
+  resume(): boolean {
+    if (!this.running || this.stopped || !this.paused) {
+      return false
+    }
+    this.paused = false
+    this.releaseResumeWaiters()
+    return true
+  }
+
   /** Requests a stop and releases any decoded frames waiting in the queue. */
   stop() {
     this.stopped = true
     this.snapshotQueue?.cancel()
+    this.paused = false
+    this.releaseResumeWaiters()
   }
 
   /**
@@ -159,6 +182,10 @@ export class VideoProcessor {
     try {
       current = await this.takePreparedSnapshot(queue)
       while (current) {
+        await this.waitUntilResumed()
+        if (this.stopped) {
+          break
+        }
         const active = current
         current = null
         const inference = active.prepared.infer()
@@ -224,6 +251,10 @@ export class VideoProcessor {
   ): Promise<void> {
     try {
       for (let time = 0; time <= duration && !this.stopped; time += stepSeconds) {
+        await this.waitUntilResumed()
+        if (this.stopped) {
+          break
+        }
         if (!(await queue.waitForSpace()) || this.stopped) {
           break
         }
@@ -284,6 +315,10 @@ export class VideoProcessor {
     let pendingSeek = startTimedSeek(this.video, 0)
 
     for (let time = 0; time <= duration && !this.stopped; time += stepSeconds) {
+      await this.waitUntilResumed()
+      if (this.stopped) {
+        break
+      }
       const seek = await pendingSeek
       if (seek.error) {
         throw seek.error
@@ -396,6 +431,20 @@ export class VideoProcessor {
     this.displayContext.drawImage(this.presentationCanvas, 0, 0)
     return performance.now() - startedAt
   }
+  private async waitUntilResumed(): Promise<void> {
+    while (this.paused && !this.stopped) {
+      await new Promise<void>((resolve) => {
+        this.resumeWaiters.push(resolve)
+      })
+    }
+  }
+
+  private releaseResumeWaiters() {
+    for (const resolve of this.resumeWaiters.splice(0)) {
+      resolve()
+    }
+  }
+
 }
 
 interface FrameSampleMetadata {

@@ -258,6 +258,69 @@ describe('VideoProcessor seek pipeline', () => {
     expect(displayCanvas.clears).toHaveLength(0)
   })
 
+  it('pauses after the active sample and resumes at the next timestamp', async () => {
+    const presentationCanvas = new FakeCanvas()
+    const displayCanvas = new FakeCanvas()
+    vi.stubGlobal('document', { createElement: () => presentationCanvas })
+    vi.stubGlobal('window', { setTimeout: () => 1, clearTimeout: () => undefined })
+
+    const video = new FakeVideo()
+    const detectionStarts = Array.from({ length: 3 }, () => Promise.withResolvers<void>())
+    const detectionResults = Array.from({ length: 3 }, () => Promise.withResolvers<DetectorResult>())
+    let detectionIndex = 0
+    const detector = {
+      prepare() {
+        const index = detectionIndex++
+        return {
+          infer() {
+            detectionStarts[index].resolve()
+            return detectionResults[index].promise
+          },
+          dispose() {},
+        }
+      },
+    }
+    const publishedTimes: number[] = []
+    let endReason: string | null = null
+    const processor = new VideoProcessor(
+      video as unknown as HTMLVideoElement,
+      displayCanvas as unknown as HTMLCanvasElement,
+      detector,
+      config,
+      {
+        onFrame: (update) => publishedTimes.push(update.videoTime),
+        onDone: (reason) => {
+          endReason = reason
+        },
+        onError: (error) => {
+          throw error
+        },
+      },
+    )
+
+    const run = processor.run()
+    await detectionStarts[0].promise
+    expect(processor.pause()).toBe(true)
+    expect(processor.pause()).toBe(false)
+
+    detectionResults[0].resolve(emptyResult)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(publishedTimes).toEqual([0.0001])
+    expect(detectionIndex).toBe(1)
+
+    expect(processor.resume()).toBe(true)
+    expect(processor.resume()).toBe(false)
+    await detectionStarts[1].promise
+    detectionResults[1].resolve(emptyResult)
+    await detectionStarts[2].promise
+    detectionResults[2].resolve(emptyResult)
+    await run
+
+    expect(endReason).toBe('complete')
+    expect(publishedTimes).toEqual([0.0001, 0.2, 0.4])
+  })
+
   it('releases a prepared look-ahead frame when stopped during active inference', async () => {
     const presentationCanvas = new FakeCanvas()
     const displayCanvas = new FakeCanvas()

@@ -13,7 +13,8 @@ import { useTrafficAnalysis } from './hooks/useTrafficAnalysis'
 
 export default function App() {
   const analysis = useTrafficAnalysis()
-  const busy = analysis.status === 'running' || analysis.status === 'loading'
+  const busy =
+    analysis.status === 'running' || analysis.status === 'paused' || analysis.status === 'loading'
 
   return (
     <div className="app">
@@ -67,6 +68,8 @@ export default function App() {
             status={analysis.status}
             canStart={analysis.canStart}
             start={analysis.start}
+            pause={analysis.pause}
+            resume={analysis.resume}
             stop={analysis.stop}
             reset={analysis.reset}
           />

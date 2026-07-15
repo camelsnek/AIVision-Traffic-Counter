@@ -119,6 +119,7 @@
 }
 
 .chip-status[data-status='complete'] .chip-dot,
+.chip-status[data-status='paused'] .chip-dot,
 .chip-status[data-status='ready'] .chip-dot {
   background: var(--accent);
 }
@@ -587,7 +588,7 @@
 
 .action-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 8px;
 }
 

@@ -20,7 +20,7 @@ import type {
   TrackSnapshot,
 } from '../types'
 
-export type AnalysisStatus = 'idle' | 'ready' | 'loading' | 'running' | 'stopped' | 'complete' | 'error'
+export type AnalysisStatus = 'idle' | 'ready' | 'loading' | 'running' | 'paused' | 'stopped' | 'complete' | 'error'
 
 export interface AnalysisProgress {
   /** 0..1 share of the video processed. */
@@ -70,6 +70,8 @@ export interface TrafficAnalysis {
   updateZoneOrientation(zoneId: string, lineOrientation: LineOrientation): void
 
   start(): Promise<void>
+  pause(): void
+  resume(): void
   stop(): void
   reset(): void
   canStart: boolean
@@ -146,7 +148,7 @@ export function useTrafficAnalysis(): TrafficAnalysis {
   const [events, setEvents] = useState<CountEvent[]>([])
 
   const counts = useMemo(() => summarizeEvents(events, config.zones), [events, config.zones])
-  const isBusy = status === 'running' || status === 'loading'
+  const isBusy = status === 'running' || status === 'paused' || status === 'loading'
 
   const redrawOverlay = useCallback(
     (tracks: readonly TrackSnapshot[], liveCounts: SessionCounts | null, editing: boolean) => {
@@ -348,6 +350,18 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     await processor.run()
   }, [videoUrl, config, isBusy, clearSession])
 
+  const pause = useCallback(() => {
+    if (status === 'running' && processorRef.current?.pause()) {
+      setStatus('paused')
+    }
+  }, [status])
+
+  const resume = useCallback(() => {
+    if (status === 'paused' && processorRef.current?.resume()) {
+      setStatus('running')
+    }
+  }, [status])
+
   const stop = useCallback(() => {
     processorRef.current?.stop()
   }, [])
@@ -457,6 +471,8 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     updateZoneLine,
     updateZoneOrientation,
     start,
+    pause,
+    resume,
     stop,
     reset,
     canStart: Boolean(videoUrl) && !isBusy && config.zones.length > 0,

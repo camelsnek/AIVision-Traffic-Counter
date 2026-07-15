@@ -39,7 +39,7 @@ export function VideoStage({
 }: VideoStageProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragActive, setDragActive] = useState(false)
-  const busy = status === 'running' || status === 'loading'
+  const busy = status === 'running' || status === 'paused' || status === 'loading'
 
   const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0]
