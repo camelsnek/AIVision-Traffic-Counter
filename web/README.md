@@ -42,13 +42,13 @@ Summary CSV and JSON exports preserve each zone's orientation and all four direc
 - **GPU — WebGPU** requires a current browser and working hardware acceleration. The option is marked unavailable when the browser cannot obtain an adapter. An explicit GPU choice never silently runs on the CPU.
 - **CPU — WebAssembly** uses the quantized model in the most compatible single-threaded runtime. It is reliable but normally slower.
 - **YOLOv10-N** is the performance-oriented model; YOLOv10-M is substantially heavier.
-- **Sampling rate** controls how many video timestamps are analyzed. Reducing it from 10 to 5 fps roughly halves the number of inference calls and usually the total analysis time. It does not make an individual model call faster.
+- **Sampling rate** controls how many video timestamps are analyzed. Reducing it from 10 to 5 fps roughly halves the number of detector calls. The processor now overlaps decoding the next timestamp with current-frame model execution, so total time is bounded primarily by the slower stage rather than their sum.
 
-The live `fps` metric is analyzed frames per wall-clock second and includes video seeking, frame preparation, inference, tracking, and rendering. `ms/frame` measures detector work only. Large or highly compressed 4K videos can therefore show lower overall fps even when GPU inference itself is fast.
+The live metrics separate **analysis fps** (completed samples per wall-clock second), **detector** time (crop through postprocessing), pure **ONNX** execution, and **seek** time. After the first sample, seek/decode runs concurrently with the preceding detector call, so seek and detector milliseconds intentionally overlap and must not be added together.
 
 ## Night image processing
 
-**Image processing** defaults to **Standard**, which preserves the existing detector input byte-for-byte. **Night — Experimental** applies luminance-only CLAHE after the configured-zone crop is resized to at most a 640-pixel edge and before the Transformers.js model processor runs. The `night-clahe-v1` profile uses an 8 × 8 tile grid and a contrast limit of 2 while retaining the source chrominance.
+**Image processing** defaults to **Standard**, which preserves the existing detector input byte-for-byte. **Night — Experimental** applies luminance-only CLAHE after the configured-zone crop is resized to a 640-pixel edge and before the pooled YOLO tensor is constructed. The `night-clahe-v1` profile uses an 8 × 8 tile grid and a contrast limit of 2 while retaining the source chrominance.
 
 The selected profile is fixed for the full analysis. JSON exports include its versioned id and exact parameters; summary CSV includes the profile id on every row. Night processing can expose low-contrast vehicles, but it can also amplify image noise, so compare it against Standard on footage from the intended camera rather than assuming that a brighter input is more accurate.
 
@@ -60,7 +60,7 @@ npm run lint
 npm run build
 ```
 
-The test suite covers geometry, event aggregation, directional flow buckets and rendering, exports, and the tracking/counting contracts: horizontal and vertical bidirectional crossings, mixed-orientation zones, one count per track, stationary-object rejection, detection gaps, parallel vehicles, tentative tracks, class voting, and zone bounds.
+The test suite covers geometry, event aggregation, directional flow buckets and rendering, exports, the pooled YOLO tensor layout, seek/inference overlap, and the tracking/counting contracts: horizontal and vertical bidirectional crossings, mixed-orientation zones, one count per track, stationary-object rejection, detection gaps, parallel vehicles, tentative tracks, class voting, and zone bounds.
 
 Pixel-level preprocessing tests additionally cover the Standard identity path, local contrast enhancement, alpha and chroma preservation, non-divisible frame dimensions, malformed inputs, determinism, and exported profile metadata.
 

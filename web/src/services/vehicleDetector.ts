@@ -1,5 +1,5 @@
-import { AutoModel, AutoProcessor, RawImage, Tensor, env } from '@huggingface/transformers'
-import type { PreTrainedModel, Processor } from '@huggingface/transformers'
+import { AutoModel, Tensor, env } from '@huggingface/transformers'
+import type { PreTrainedModel } from '@huggingface/transformers'
 
 import ortAsyncifyMjsUrl from '../../vendor/ort/ort-wasm-simd-threaded.asyncify.mjs?url'
 import ortAsyncifyWasmUrl from '../../vendor/ort/ort-wasm-simd-threaded.asyncify.wasm?url'
@@ -8,6 +8,7 @@ import ortPlainWasmUrl from '../../vendor/ort/ort-wasm-simd-threaded.wasm?url'
 import { clamp01, intersectionOverUnion } from '../lib/geometry'
 import { preprocessRgba } from '../lib/framePreprocessing'
 import { getModelProfile } from '../lib/modelProfiles'
+import { fillYoloInput, YOLO_INPUT_EDGE } from '../lib/yoloInput'
 import type {
   Detection,
   EngineDevice,
@@ -26,8 +27,8 @@ const VEHICLE_LABELS: Record<string, VehicleClass> = {
   motorcycle: 'motorcycle',
 }
 
-/** The processor's model input has a 640px longest edge; larger crops only add readback work. */
-const MAX_CROP_EDGE = 640
+/** YOLO's fixed square input edge; source crops are scaled to fit it. */
+const MAX_CROP_EDGE = YOLO_INPUT_EDGE
 /** Same-class boxes above this IoU are duplicates of one object. */
 const SAME_CLASS_IOU = 0.6
 /** Any-class boxes above this IoU are one object detected as two classes. */
@@ -58,6 +59,37 @@ if (env.backends.onnx?.webgpu) {
   env.backends.onnx.webgpu.powerPreference = 'high-performance'
 }
 
+export interface DetectorTimings {
+  /** Canvas crop draw and synchronous pixel readback. */
+  captureMs: number
+  /** Optional application preprocessing, before tensor construction. */
+  preprocessingMs: number
+  /** Direct RGB rescaling, NCHW layout, and top-left padding. */
+  tensorMs: number
+  /** ONNX model execution. */
+  inferenceMs: number
+  /** Output parsing, duplicate suppression, and tensor disposal. */
+  postprocessMs: number
+  /** Complete detector call, from crop capture through postprocessing. */
+  totalMs: number
+}
+
+export interface DetectorResult {
+  detections: Detection[]
+  timings: DetectorTimings
+}
+
+interface CapturedFrame {
+  cropWidth: number
+  cropHeight: number
+  roi: RectNorm
+  minConfidence: number
+  totalStart: number
+  captureMs: number
+  preprocessingMs: number
+  tensorMs: number
+}
+
 /**
  * Single-pass YOLOv10 vehicle detector.
  *
@@ -68,14 +100,14 @@ export class VehicleDetector {
   readonly info: EngineInfo
 
   private readonly model: PreTrainedModel
-  private readonly processor: Processor
   private readonly labelById: Map<number, string>
   private readonly cropCanvas = document.createElement('canvas')
+  private readonly inputBuffer = new Float32Array(3 * YOLO_INPUT_EDGE * YOLO_INPUT_EDGE)
+  private readonly inputTensor = new Tensor('float32', this.inputBuffer, [1, 3, YOLO_INPUT_EDGE, YOLO_INPUT_EDGE])
 
-  private constructor(info: EngineInfo, model: PreTrainedModel, processor: Processor) {
+  private constructor(info: EngineInfo, model: PreTrainedModel) {
     this.info = info
     this.model = model
-    this.processor = processor
     this.labelById = readLabelMap(model.config)
   }
 
@@ -102,6 +134,7 @@ export class VehicleDetector {
   }
 
   async dispose(): Promise<void> {
+    this.inputTensor.dispose()
     await this.model.dispose()
   }
 
@@ -122,23 +155,21 @@ export class VehicleDetector {
       }),
       RUNTIME_INIT_TIMEOUT_MS,
     )
-    const processor = await AutoProcessor.from_pretrained(modelProfileId, {
-      local_files_only: true,
-    })
-
-    return new VehicleDetector({ modelProfileId, device, dtype }, model, processor)
+    return new VehicleDetector({ modelProfileId, device, dtype }, model)
   }
 
   /**
-   * Detects vehicles inside `roi` (normalized full-frame rect) of the current
-   * video frame. Returned boxes are normalized to the FULL frame.
+   * Captures the current video frame synchronously, then processes the
+   * immutable pixels asynchronously. Once this method returns its promise,
+   * callers may safely seek the video while model work is still running.
    */
-  async detect(
+  detect(
     video: HTMLVideoElement,
     roi: RectNorm,
     minConfidence: number,
     preprocessingProfileId: PreprocessingProfileId,
-  ): Promise<Detection[]> {
+  ): Promise<DetectorResult> {
+    const totalStart = performance.now()
     const frameWidth = video.videoWidth
     const frameHeight = video.videoHeight
     if (!frameWidth || !frameHeight) {
@@ -150,7 +181,7 @@ export class VehicleDetector {
     const sourceWidth = Math.max(1, Math.round(roi.width * frameWidth))
     const sourceHeight = Math.max(1, Math.round(roi.height * frameHeight))
 
-    const scale = Math.min(1, MAX_CROP_EDGE / Math.max(sourceWidth, sourceHeight))
+    const scale = MAX_CROP_EDGE / Math.max(sourceWidth, sourceHeight)
     const cropWidth = Math.max(1, Math.round(sourceWidth * scale))
     const cropHeight = Math.max(1, Math.round(sourceHeight * scale))
 
@@ -165,30 +196,69 @@ export class VehicleDetector {
     if (!context) {
       throw new Error('Unable to prepare a frame for the detector.')
     }
-    context.drawImage(video, sourceLeft, sourceTop, sourceWidth, sourceHeight, 0, 0, cropWidth, cropHeight)
 
-    const sourceImage = RawImage.fromCanvas(this.cropCanvas)
-    const inputPixels = preprocessRgba(sourceImage.data, cropWidth, cropHeight, preprocessingProfileId)
-    const image =
-      inputPixels === sourceImage.data ? sourceImage : new RawImage(inputPixels, cropWidth, cropHeight, 4)
-    const processed = await this.processor(image)
-    const outputs = await this.model({ images: processed.pixel_values })
-    processed.pixel_values.dispose()
+    const captureStart = performance.now()
+    context.drawImage(video, sourceLeft, sourceTop, sourceWidth, sourceHeight, 0, 0, cropWidth, cropHeight)
+    const sourcePixels = context.getImageData(0, 0, cropWidth, cropHeight).data
+    const captureMs = performance.now() - captureStart
+
+    const preprocessingStart = performance.now()
+    const inputPixels = preprocessRgba(sourcePixels, cropWidth, cropHeight, preprocessingProfileId)
+    const preprocessingMs = performance.now() - preprocessingStart
+
+    const tensorStart = performance.now()
+    fillYoloInput(inputPixels, cropWidth, cropHeight, this.inputBuffer)
+    const tensorMs = performance.now() - tensorStart
+
+    return this.detectCaptured({
+      cropWidth,
+      cropHeight,
+      roi,
+      minConfidence,
+      totalStart,
+      captureMs,
+      preprocessingMs,
+      tensorMs,
+    })
+  }
+
+  private async detectCaptured(frame: CapturedFrame): Promise<DetectorResult> {
+    const inferenceStart = performance.now()
+    const outputs = await this.model({ images: this.inputTensor })
+    const inferenceMs = performance.now() - inferenceStart
+
+    const postprocessStart = performance.now()
     const output0 = 'output0' in outputs ? outputs.output0 : null
     if (!(output0 instanceof Tensor)) {
       throw new Error('The YOLO model returned an unexpected output.')
     }
 
-    const [inputHeight, inputWidth] = readReshapedSize(processed, cropHeight, cropWidth)
-    const detections = this.parsePredictions(output0, {
-      inputWidth,
-      inputHeight,
-      roi,
-      minConfidence,
-    })
-    output0.dispose()
+    let detections: Detection[]
+    try {
+      detections = suppressDuplicates(
+        this.parsePredictions(output0, {
+          inputWidth: frame.cropWidth,
+          inputHeight: frame.cropHeight,
+          roi: frame.roi,
+          minConfidence: frame.minConfidence,
+        }),
+      )
+    } finally {
+      output0.dispose()
+    }
+    const postprocessMs = performance.now() - postprocessStart
 
-    return suppressDuplicates(detections)
+    return {
+      detections,
+      timings: {
+        captureMs: frame.captureMs,
+        preprocessingMs: frame.preprocessingMs,
+        tensorMs: frame.tensorMs,
+        inferenceMs,
+        postprocessMs,
+        totalMs: performance.now() - frame.totalStart,
+      },
+    }
   }
 
   private parsePredictions(
@@ -300,18 +370,6 @@ function readLabelMap(config: unknown): Map<number, string> {
   return labels
 }
 
-function readReshapedSize(processed: unknown, fallbackHeight: number, fallbackWidth: number): [number, number] {
-  if (processed && typeof processed === 'object' && 'reshaped_input_sizes' in processed) {
-    const sizes = processed.reshaped_input_sizes
-    if (Array.isArray(sizes) && Array.isArray(sizes[0])) {
-      const [height, width] = sizes[0]
-      if (typeof height === 'number' && typeof width === 'number' && height > 0 && width > 0) {
-        return [height, width]
-      }
-    }
-  }
-  return [fallbackHeight, fallbackWidth]
-}
 
 /**
  * YOLOv10 is NMS-free, but low thresholds still yield the occasional double

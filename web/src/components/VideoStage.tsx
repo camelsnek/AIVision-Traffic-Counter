@@ -11,10 +11,12 @@ import { formatDuration } from '../lib/format'
 
 interface VideoStageProps {
   videoRef: RefObject<HTMLVideoElement | null>
+  frameRef: RefObject<HTMLCanvasElement | null>
   overlayRef: RefObject<HTMLCanvasElement | null>
   videoUrl: string | null
   fileName: string | null
   videoSize: VideoSize | null
+  frameVisible: boolean
   status: AnalysisStatus
   progress: AnalysisProgress
   loadFile(file: File): void
@@ -24,10 +26,12 @@ interface VideoStageProps {
 
 export function VideoStage({
   videoRef,
+  frameRef,
   overlayRef,
   videoUrl,
   fileName,
   videoSize,
+  frameVisible,
   status,
   progress,
   loadFile,
@@ -100,6 +104,11 @@ export function VideoStage({
             style={{ aspectRatio: videoSize ? `${videoSize.width} / ${videoSize.height}` : '16 / 9' }}
           >
             <video ref={videoRef} className="stage-video" src={videoUrl} playsInline preload="auto" muted />
+            <canvas
+              ref={frameRef}
+              className={frameVisible ? 'stage-frame is-visible' : 'stage-frame'}
+              aria-hidden="true"
+            />
             <canvas ref={overlayRef} className="stage-overlay" />
             {children}
           </div>

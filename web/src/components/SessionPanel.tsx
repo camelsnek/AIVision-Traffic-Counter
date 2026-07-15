@@ -1,3 +1,5 @@
+import { memo } from 'react'
+
 import { classColors } from '../lib/palette'
 import { vehicleClasses } from '../types'
 import type { SessionCounts } from '../types'
@@ -6,7 +8,7 @@ interface SessionPanelProps {
   counts: SessionCounts
 }
 
-export function SessionPanel({ counts }: SessionPanelProps) {
+export const SessionPanel = memo(function SessionPanel({ counts }: SessionPanelProps) {
   const hasHorizontal = counts.zones.some((zone) => zone.lineOrientation === 'horizontal')
   const hasVertical = counts.zones.some((zone) => zone.lineOrientation === 'vertical')
   return (
@@ -67,4 +69,4 @@ export function SessionPanel({ counts }: SessionPanelProps) {
       </ul>
     </section>
   )
-}
+})

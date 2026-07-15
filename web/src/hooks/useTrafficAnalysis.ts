@@ -5,7 +5,7 @@ import { buildSessionExport, downloadTextFile, eventsToCsv, summaryToCsv } from 
 import { clampRect } from '../lib/geometry'
 import { summarizeEvents } from '../lib/stats'
 import { VehicleDetector } from '../services/vehicleDetector'
-import { VideoProcessor } from '../services/videoProcessor'
+import { VideoProcessor, type FrameTimings } from '../services/videoProcessor'
 import type {
   AnalysisConfig,
   CountEvent,
@@ -27,7 +27,7 @@ export interface AnalysisProgress {
   progress: number
   videoTime: number
   durationSeconds: number
-  inferenceMs: number
+  timings: FrameTimings
   throughputFps: number
 }
 
@@ -38,11 +38,13 @@ export interface VideoSize {
 
 export interface TrafficAnalysis {
   videoRef: React.RefObject<HTMLVideoElement | null>
+  frameRef: React.RefObject<HTMLCanvasElement | null>
   overlayRef: React.RefObject<HTMLCanvasElement | null>
 
   videoUrl: string | null
   fileName: string | null
   videoSize: VideoSize | null
+  frameVisible: boolean
   loadFile(file: File): void
 
   status: AnalysisStatus
@@ -85,7 +87,21 @@ const INITIAL_PROGRESS: AnalysisProgress = {
   progress: 0,
   videoTime: 0,
   durationSeconds: 0,
-  inferenceMs: 0,
+  timings: {
+    seekMs: 0,
+    frameCaptureMs: 0,
+    detector: {
+      captureMs: 0,
+      preprocessingMs: 0,
+      tensorMs: 0,
+      inferenceMs: 0,
+      postprocessMs: 0,
+      totalMs: 0,
+    },
+    counterMs: 0,
+    displayMs: 0,
+    frameIntervalMs: 0,
+  },
   throughputFps: 0,
 }
 
@@ -102,17 +118,20 @@ const DEFAULT_CONFIG: AnalysisConfig = {
 
 export function useTrafficAnalysis(): TrafficAnalysis {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const frameRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
   const objectUrlRef = useRef<string | null>(null)
   const processorRef = useRef<VideoProcessor | null>(null)
   const detectorRef = useRef<{ key: string; detector: VehicleDetector } | null>(null)
   const tracksRef = useRef<TrackSnapshot[]>([])
   const eventsRef = useRef<CountEvent[]>([])
+  const liveCountsRef = useRef<SessionCounts | null>(null)
   const nextZoneNumberRef = useRef(2)
 
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [videoSize, setVideoSize] = useState<VideoSize | null>(null)
+  const [frameVisible, setFrameVisible] = useState(false)
   const [status, setStatus] = useState<AnalysisStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [engine, setEngine] = useState<EngineInfo | null>(null)
@@ -199,10 +218,19 @@ export function useTrafficAnalysis(): TrafficAnalysis {
 
     const applySize = () => {
       const overlay = overlayRef.current
-      if (overlay && video.videoWidth && video.videoHeight) {
+      const frame = frameRef.current
+      if (video.videoWidth && video.videoHeight) {
         const scale = Math.min(1, MAX_OVERLAY_EDGE / Math.max(video.videoWidth, video.videoHeight))
-        overlay.width = Math.max(1, Math.round(video.videoWidth * scale))
-        overlay.height = Math.max(1, Math.round(video.videoHeight * scale))
+        const width = Math.max(1, Math.round(video.videoWidth * scale))
+        const height = Math.max(1, Math.round(video.videoHeight * scale))
+        if (overlay) {
+          overlay.width = width
+          overlay.height = height
+        }
+        if (frame) {
+          frame.width = width
+          frame.height = height
+        }
       }
       setVideoSize(video.videoWidth ? { width: video.videoWidth, height: video.videoHeight } : null)
     }
@@ -217,6 +245,8 @@ export function useTrafficAnalysis(): TrafficAnalysis {
   const clearSession = useCallback(() => {
     tracksRef.current = []
     eventsRef.current = []
+    liveCountsRef.current = null
+    setFrameVisible(false)
     setEvents([])
     setProgress(INITIAL_PROGRESS)
     setError(null)
@@ -241,12 +271,14 @@ export function useTrafficAnalysis(): TrafficAnalysis {
 
   const start = useCallback(async () => {
     const video = videoRef.current
-    if (!video || !videoUrl || config.zones.length === 0 || isBusy) {
+    const frame = frameRef.current
+    if (!video || !frame || !videoUrl || config.zones.length === 0 || isBusy) {
       return
     }
 
     clearSession()
     setZoneEditing(false)
+    liveCountsRef.current = summarizeEvents([], config.zones)
     setStatus('loading')
 
     const detectorKey = `${config.modelProfileId}:${config.enginePreference}`
@@ -268,18 +300,20 @@ export function useTrafficAnalysis(): TrafficAnalysis {
     }
     setEngine(detector.info)
 
-    const processor = new VideoProcessor(video, detector, config, {
+    const processor = new VideoProcessor(video, frame, detector, config, {
       onFrame: (update) => {
+        setFrameVisible(true)
         tracksRef.current = update.tracks
         if (update.newEvents.length > 0) {
-          eventsRef.current = [...eventsRef.current, ...update.newEvents]
-          setEvents(eventsRef.current)
+          eventsRef.current.push(...update.newEvents)
+          setEvents([...eventsRef.current])
+          liveCountsRef.current = summarizeEvents(eventsRef.current, config.zones)
         }
         setProgress({
           progress: update.progress,
           videoTime: update.videoTime,
           durationSeconds: update.durationSeconds,
-          inferenceMs: update.inferenceMs,
+          timings: update.timings,
           throughputFps: update.throughputFps,
         })
         const overlay = overlayRef.current
@@ -287,7 +321,7 @@ export function useTrafficAnalysis(): TrafficAnalysis {
           drawOverlay(overlay, {
             tracks: update.tracks,
             zones: config.zones,
-            counts: summarizeEvents(eventsRef.current, config.zones),
+            counts: liveCountsRef.current,
             activeZoneId: null,
             editing: false,
           })
@@ -394,10 +428,12 @@ export function useTrafficAnalysis(): TrafficAnalysis {
 
   return {
     videoRef,
+    frameRef,
     overlayRef,
     videoUrl,
     fileName,
     videoSize,
+    frameVisible,
     loadFile,
     status,
     error,

@@ -1,3 +1,5 @@
+import { memo } from 'react'
+
 import { formatDuration } from '../lib/format'
 import { flowBuckets } from '../lib/stats'
 import type { CountEvent, Direction } from '../types'
@@ -28,7 +30,7 @@ interface FlowChartProps {
   durationSeconds: number
 }
 
-export function FlowChart({ events, durationSeconds }: FlowChartProps) {
+export const FlowChart = memo(function FlowChart({ events, durationSeconds }: FlowChartProps) {
   const duration =
     durationSeconds > 0 ? durationSeconds : events.length > 0 ? events[events.length - 1].videoTime : 0
   const buckets = flowBuckets(events, duration, 30)
@@ -135,7 +137,7 @@ export function FlowChart({ events, durationSeconds }: FlowChartProps) {
       )}
     </section>
   )
-}
+})
 
 function visibleDirections(events: readonly CountEvent[]): Direction[] {
   const hasHorizontal = events.some((event) => event.direction === 'down' || event.direction === 'up')

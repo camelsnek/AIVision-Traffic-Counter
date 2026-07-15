@@ -233,10 +233,10 @@ A rollback must never rewrite historical results. Session schema and model IDs d
 The configured **Sampling rate** and the live **fps** metric measure different things:
 
 - `samplingFps` is the number of video timestamps requested per second of source video. At 15, `VideoProcessor` advances its target by $1/15$ video-second after each completed sample.
-- `throughputFps` is completed analysis iterations per wall-clock second. Each iteration currently includes the previous UI callback plus the next seek/decode, detector, tracking, and counter work.
-- The displayed `ms/frame` value is also broader than pure ONNX latency. Its timer encloses crop drawing, synchronous canvas readback, optional image preprocessing, the Transformers.js processor, ONNX inference, prediction parsing, duplicate suppression, and tensor disposal.
+- `throughputFps` is completed analysis iterations per wall-clock second. Each completion interval includes the previous synchronous UI callback plus current detector work and any seek/decode time not hidden by the pipeline.
+- The live header now separates full detector time, pure ONNX execution, and seek/decode time rather than presenting the entire detector path as `ms/frame`.
 
-The processing loop is serial and deterministic: seek one target, wait for the browser to decode it, analyze it, update tracks, render the result, and only then request the next target. A slower machine therefore finishes later; it does not intentionally skip configured timestamps.
+The processor remains deterministic and ordered, but it is no longer fully serial. It captures immutable current-frame pixels, starts the next monotonic seek, and overlaps that decode with current-frame ONNX execution. The counter and UI still commit exactly once in timestamp order after detection completes.
 
 At 15 configured samples per video-second and 1.7 completed samples per wall-second:
 
@@ -293,15 +293,39 @@ The main path in `VideoProcessor` and `VehicleDetector` performs the following w
 3. draw the zone-union crop to a canvas;
 4. synchronously read RGBA pixels back to JavaScript;
 5. optionally run luminance-only CLAHE;
-6. let Transformers.js allocate and copy RGBA→RGB, bytes→float, resize/pad, HWC→CHW, and singleton-batch buffers;
+6. construct the top-left-padded NCHW float tensor directly in one reusable buffer;
 7. run YOLOv10;
 8. parse and suppress detections;
 9. greedily associate tracks and copy snapshots/trails;
-10. resummarize all events, update React state, clear the overlay, and redraw zones, trails, boxes, and labels.
+10. update cached event aggregates when needed, update React state, clear the overlay, and redraw zones, trails, boxes, and labels.
 
-There is no decode prefetch, bounded frame queue, batch inference, or overlap between decode and inference. CPU/WASM is deliberately configured with `proxy = false` and `numThreads = 1`, even though threaded runtime assets are bundled. That compatibility fallback keeps inference and preprocessing on the interactive path. Vite supplies COOP/COEP only during development and preview; a built deployment receives those headers only if its real server is configured to add them.
+The next seek/decode now overlaps the preceding detector call, and the generic Transformers.js image processor and its intermediate RGB/float/pad/permute/batch allocations have been removed. There is still no bounded multi-frame decode queue or batch inference. CPU/WASM remains deliberately configured with `proxy = false` and `numThreads = 1`, even though threaded runtime assets are bundled. Vite supplies COOP/COEP only during development and preview; a built deployment receives those headers only if its real server is configured to add them.
 
-The model processor always pads to a 640×640 tensor. A smaller source ROI can improve vehicle scale and reduce source-pixel readback, but it does not by itself make the YOLO tensor smaller. Standard preprocessing avoids the extra Night CLAHE passes; Night preprocessing was previously measured at only a few milliseconds for the current 640-pixel-edge crop, so it is not a credible explanation for hundreds of milliseconds per sample.
+The model input remains a fixed 640×640 tensor. A smaller source ROI can improve vehicle scale and reduce source-pixel readback, but it does not make the YOLO tensor smaller. Standard preprocessing avoids the extra Night CLAHE passes; Night preprocessing was previously measured at only a few milliseconds for the current 640-pixel-edge crop, so it is not a credible explanation for hundreds of milliseconds per sample.
+
+## First implemented optimization slice
+
+The first performance branch now includes:
+
+- one-video/two-canvas frame presentation, keeping the displayed frame paired with its overlay while the media element seeks ahead;
+- overlap of the next seek/decode with current detector execution;
+- direct pooled RGBA→RGB float/NCHW/padding construction for the fixed 640×640 YOLO input;
+- reusable detector input and presentation buffers;
+- cached live counts, recomputed only after new events;
+- memoized flow-chart and session-total rendering;
+- allocation-free trail iteration in the overlay; and
+- separate live analysis-fps, detector, ONNX, and seek telemetry.
+
+On the same 15-second 1920×1080 CPU/WASM q8 excerpt used above, with 5 sampling fps, Standard preprocessing, confidence 0.35, and the default zone:
+
+| Revision | Wall time | Median completion interval | p95 completion interval | Emitted events |
+| --- | ---: | ---: | ---: | ---: |
+| Serial seek + generic processor | 23.7 s | 299 ms | 401 ms | 23 |
+| Pipelined seek + pooled direct tensor | 20.8 s | 257 ms | 290 ms | 23 |
+
+This short local run improved wall time by 12%, median completion interval by 14%, and p95 interval by 28%. The final intervals fell from roughly 369 ms to 271 ms instead of continuing to degrade. The complete event stream—track IDs, directions, classes, and timestamps—matched the pre-change run exactly on this clip.
+
+These are workstation results, not Dell PC16250 claims. The Dell must repeat the same at-most-20-second fixture for CPU and WebGPU. The important expected behavior is that seek cost is hidden behind detector work where possible and long-run p95 no longer grows with distance from a keyframe.
 
 ## Prioritized performance-upgrade plan
 
@@ -313,7 +337,7 @@ Instrument cold and warm samples separately. Record requested and actual video t
 - crop draw;
 - canvas readback;
 - Standard/Night preprocessing;
-- Transformers.js processor;
+- direct tensor construction;
 - ONNX execution;
 - prediction parsing and suppression;
 - tracker/counter update;
@@ -361,10 +385,10 @@ Keep the existing seek path as the reference until the new path matches requeste
 
 ### Perf 4 — remove avoidable copies and repeated UI work
 
-- Replace the generic image processor only after a direct, pooled tensor builder is proven pixel-equivalent for resize, padding, normalization, and layout.
-- Reuse typed arrays and canvases rather than allocating multiple 640×640 RGBA/RGB/float/CHW/batch buffers per sample.
+- **Implemented:** replace the generic image processor with a direct pooled tensor builder for the current fixed 640×640 YOLO models, covered by layout/padding tests and real-clip event parity.
+- **Implemented:** reuse the detector tensor buffer and frame-presentation canvases instead of allocating multiple RGB/float/layout/batch buffers per sample.
 - Investigate ONNX/WebGPU tensor I/O binding where the supported runtime can avoid CPU round trips.
-- Maintain event aggregates incrementally instead of resummarizing the complete event list every sample.
+- **Implemented:** cache live event aggregates and recompute them only when an event is emitted.
 - Avoid cloning full track trails for consumers that do not need them.
 - Throttle React progress/overlay presentation independently of analytical sampling, while still rendering final and requested inspection frames.
 

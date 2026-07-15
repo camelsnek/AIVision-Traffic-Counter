@@ -128,7 +128,8 @@ function drawTrack(
     context.lineWidth = 1.8 * unit
     context.beginPath()
     context.moveTo(track.trail[0].x * width, track.trail[0].y * height)
-    for (const point of track.trail.slice(1)) {
+    for (let index = 1; index < track.trail.length; index += 1) {
+      const point = track.trail[index]
       context.lineTo(point.x * width, point.y * height)
     }
     context.stroke()

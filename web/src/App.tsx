@@ -27,10 +27,12 @@ export default function App() {
         <section className="stage-column" aria-label="Video stage">
           <VideoStage
             videoRef={analysis.videoRef}
+            frameRef={analysis.frameRef}
             overlayRef={analysis.overlayRef}
             videoUrl={analysis.videoUrl}
             fileName={analysis.fileName}
             videoSize={analysis.videoSize}
+            frameVisible={analysis.frameVisible}
             status={analysis.status}
             progress={analysis.progress}
             loadFile={analysis.loadFile}

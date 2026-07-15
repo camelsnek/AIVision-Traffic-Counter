@@ -384,6 +384,20 @@
   display: block;
 }
 
+.stage-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.stage-frame.is-visible {
+  opacity: 1;
+}
+
 .stage-overlay {
   position: absolute;
   inset: 0;
