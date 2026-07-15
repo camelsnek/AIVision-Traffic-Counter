@@ -325,7 +325,31 @@ On the same 15-second 1920×1080 CPU/WASM q8 excerpt used above, with 5 sampling
 
 This short local run improved wall time by 12%, median completion interval by 14%, and p95 interval by 28%. The final intervals fell from roughly 369 ms to 271 ms instead of continuing to degrade. The complete event stream—track IDs, directions, classes, and timestamps—matched the pre-change run exactly on this clip.
 
-These are workstation results, not Dell PC16250 claims. The Dell must repeat the same at-most-20-second fixture for CPU and WebGPU. The important expected behavior is that seek cost is hidden behind detector work where possible and long-run p95 no longer grows with distance from a keyframe.
+These are workstation results, not Dell PC16250 claims. Initial Dell and primary-desktop field measurements are recorded below; they are useful directional evidence but are not yet the controlled, repeated benchmark matrix required by Perf 0.
+
+### Field measurements after the first optimization slice — 2026-07-15
+
+The operator tested a 30-second video on the Dell and reported the following live metrics:
+
+| Machine | Backend | Sampling | Warm analysis throughput | Detector | ONNX | Seek | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Dell | WebGPU | 10 video fps | 4–5 analysis fps | 200–300 ms | about 200 ms | 60–90 ms | Cold display began at 5.7 fps; visually tracked well |
+| Dell | WebGPU | 5 video fps | 3.7–4.6 analysis fps | about 150 ms | 120–200 ms | 70–90 ms | Cold display began at 6.7 fps; visually tracked well |
+| Dell | CPU/WASM | 10 video fps | about 1.0 analysis fps | about 1,000 ms | about 1,000 ms | about 1,000 ms | External-power state was uncontrolled |
+| Dell | CPU/WASM | 5 video fps | about 1.1 analysis fps | 830–950 ms | 920–1,000 ms | 980–1,000 ms | External-power state was uncontrolled |
+| Primary desktop | WebGPU | 10 video fps | 14–32 analysis fps | about 50 ms | about 20 ms | 30–60 ms | Processes source video faster than real time |
+
+The ranges are operator-observed live values rather than exported per-frame distributions, so independently quoted detector and ONNX ranges need not describe the same frame. Cold-start throughput is also not a stable comparison statistic.
+
+The measurements establish several useful points:
+
+1. **The Dell WebGPU path is viable.** At 10 sampling fps it analyzes roughly 4–5 samples per wall-clock second while preserving apparently good visual tracking.
+2. **Sampling rate controls total work, not model speed.** Similar wall-clock analysis fps at 5 and 10 sampling means the Dell is compute/decode-bound. A 30-second clip requests roughly 150 versus 300 samples, so the 5-fps run should finish in approximately half the wall time even though the live analysis-fps number is similar.
+3. **The Dell CPU result is not yet a valid hardware comparison.** Power state was uncontrolled and must be repeated on external power with the browser and Windows power mode fixed.
+4. **The CPU path is also architecturally unable to exploit the new overlap fully.** [INFERENCE] Single-thread synchronous WASM blocks the browser thread that dispatches the `seeked` event; this explains why reported CPU seek time rises toward the roughly one-second inference duration instead of remaining near the WebGPU seek time. A detector worker and safely threaded WASM fallback are therefore the next CPU-specific experiment.
+5. **The primary desktop has substantial WebGPU headroom.** Analysis fps may legitimately exceed the configured source-video sampling rate because uploaded-video processing is offline rather than playback-rate limited.
+
+Visual tracking quality is encouraging but is not an accuracy gate. The Dell comparison still needs exported event parity at 5 versus 10 sampling fps and, ultimately, adjudicated crossing precision/recall. For immediate operator use on the Dell, 5 sampling fps is the pragmatic throughput setting only if the exported counts remain stable against the 10-fps run.
 
 ## Prioritized performance-upgrade plan
 
