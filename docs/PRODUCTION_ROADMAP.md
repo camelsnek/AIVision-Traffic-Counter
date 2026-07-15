@@ -2,10 +2,11 @@
 
 ## Purpose
 
-This document records two plans:
+This document records three plans:
 
-1. how to add the future Czech-facing vehicle groups `O`, `NA`, `K`, `M`, and `A` without pretending that the current COCO detector can provide them; and
-2. how to move the current browser application from a strong local pilot to a trustworthy, auditable production traffic-counting tool.
+1. how to add the future Czech-facing vehicle groups `O`, `NA`, `K`, `M`, and `A` without pretending that the current COCO detector can provide them;
+2. how to remove the current browser-processing bottlenecks without trading away count stability; and
+3. how to move the current browser application from a strong local pilot to a trustworthy, auditable production traffic-counting tool.
 
 The maintained product is the React/Vite application under `web/`. The Flutter tree remains a future native shell and is not part of this roadmap unless a native/mobile product is explicitly commissioned.
 
@@ -222,6 +223,172 @@ Freeze the group at count finalization. Keep the machine prediction immutable; o
 7. Remove a rejected model artifact rather than accumulating ambiguous “experimental” production modes.
 
 A rollback must never rewrite historical results. Session schema and model IDs determine how an existing result is interpreted.
+
+---
+
+# Performance and count-stability investigation
+
+## What the two frame-rate controls mean
+
+The configured **Sampling rate** and the live **fps** metric measure different things:
+
+- `samplingFps` is the number of video timestamps requested per second of source video. At 15, `VideoProcessor` advances its target by $1/15$ video-second after each completed sample.
+- `throughputFps` is completed analysis iterations per wall-clock second. Each iteration currently includes the previous UI callback plus the next seek/decode, detector, tracking, and counter work.
+- The displayed `ms/frame` value is also broader than pure ONNX latency. Its timer encloses crop drawing, synchronous canvas readback, optional image preprocessing, the Transformers.js processor, ONNX inference, prediction parsing, duplicate suppression, and tensor disposal.
+
+The processing loop is serial and deterministic: seek one target, wait for the browser to decode it, analyze it, update tracks, render the result, and only then request the next target. A slower machine therefore finishes later; it does not intentionally skip configured timestamps.
+
+At 15 configured samples per video-second and 1.7 completed samples per wall-second:
+
+$$
+\text{video-speed ratio} = \frac{1.7}{15} \approx 0.113
+$$
+
+The run takes about $15/1.7 \approx 8.8$ wall-seconds per video-second, or approximately 8 minutes 49 seconds per video minute after startup. The 1.7 figure is therefore plausible for a CPU-bound browser path, but it must not be interpreted as “only 1.7 of the requested 15 source frames were analyzed.”
+
+## Reproducible local comparison
+
+A focused browser check used the same 15-second, 1920×1080 excerpt of `carsnight.mp4`, YOLOv10-N, CPU/WASM q8, Standard preprocessing, confidence 0.35, the default zone, and an already loaded model. This was run on the development workstation, **not** the Dell PC16250, and the clip has no manually adjudicated ground truth.
+
+| Configured sampling | Nominal analyzed timestamps | Wall time | Average completed samples/s | Emitted events |
+| ---: | ---: | ---: | ---: | ---: |
+| 5 video-time fps | 76 | 23.1 s | 3.28 | 23 |
+| 15 video-time fps | 226 | 83.8 s | 2.70 | 22 |
+
+This establishes two useful facts:
+
+1. More requested samples substantially increase total work; 15 fps was 3.6× slower than 5 fps in this run.
+2. The tracker/counter is not invariant to sampling rate. The higher-rate run produced one fewer event, and event-producing track IDs reached 61 instead of 38, which is a warning sign for additional identity fragmentation. Without ground truth, neither total can be called correct.
+
+This comparison is diagnostic evidence, not a hardware benchmark or an accuracy claim. Production decisions require repeated runs, per-stage timing, memory measurements, and adjudicated events.
+
+## Why a vehicle can show a check mark without reaching the total
+
+There is a concrete UI/counter contract defect:
+
+1. A tentative track crossing a line immediately adds the zone to `track.countedZones`.
+2. `drawOverlay` treats any non-empty `countedZones` as counted and renders the check mark.
+3. The actual `CountEvent` remains pending until the track reaches three matched detections.
+4. If that track is fragmented or exceeds five missed samples before confirmation, the pending event is discarded.
+
+The operator can therefore see a checked vehicle that never becomes an exported count. `countedZones` must mean an emitted count only; a tentative crossing needs a separate pending state and must never use the final-count visual treatment.
+
+Other present count-loss mechanisms are:
+
+- `minHits = 3` and `maxMisses = 5` are counts of samples rather than durations. Confirmation and occlusion tolerance therefore change when sampling changes.
+- Track prediction advances by one sample rather than actual video-time delta. Higher or lower sampling changes association behavior.
+- Matching is greedy. Nearby vehicles can steal an association, while box jitter or a large inter-sample movement can start a new identity past the line.
+- Crossings are evaluated only between two matched real detections. A coasted overlay may visibly cross the line without producing an event; if the object does not re-associate before retirement, the crossing is lost.
+- The crossing test requires the tracked center to move between opposite sides of the bounded line. Merely being detected in the zone is intentionally insufficient.
+- A previous center exactly on the line satisfies neither strict side test.
+- Predictions below the selected confidence or outside the four accepted COCO labels are removed before tracking.
+- Event time is currently the later sample time rather than the interpolated crossing time.
+
+## Current processing cost map
+
+The main path in `VideoProcessor` and `VehicleDetector` performs the following work for every target timestamp:
+
+1. assign `video.currentTime` and await `seeked`;
+2. decode enough of the H.264 stream to expose the target frame;
+3. draw the zone-union crop to a canvas;
+4. synchronously read RGBA pixels back to JavaScript;
+5. optionally run luminance-only CLAHE;
+6. let Transformers.js allocate and copy RGBA→RGB, bytes→float, resize/pad, HWC→CHW, and singleton-batch buffers;
+7. run YOLOv10;
+8. parse and suppress detections;
+9. greedily associate tracks and copy snapshots/trails;
+10. resummarize all events, update React state, clear the overlay, and redraw zones, trails, boxes, and labels.
+
+There is no decode prefetch, bounded frame queue, batch inference, or overlap between decode and inference. CPU/WASM is deliberately configured with `proxy = false` and `numThreads = 1`, even though threaded runtime assets are bundled. That compatibility fallback keeps inference and preprocessing on the interactive path. Vite supplies COOP/COEP only during development and preview; a built deployment receives those headers only if its real server is configured to add them.
+
+The model processor always pads to a 640×640 tensor. A smaller source ROI can improve vehicle scale and reduce source-pixel readback, but it does not by itself make the YOLO tensor smaller. Standard preprocessing avoids the extra Night CLAHE passes; Night preprocessing was previously measured at only a few milliseconds for the current 640-pixel-edge crop, so it is not a credible explanation for hundreds of milliseconds per sample.
+
+## Prioritized performance-upgrade plan
+
+### Perf 0 — add truthful profiling and a frozen benchmark
+
+Instrument cold and warm samples separately. Record requested and actual video timestamps plus:
+
+- seek/decode;
+- crop draw;
+- canvas readback;
+- Standard/Night preprocessing;
+- Transformers.js processor;
+- ONNX execution;
+- prediction parsing and suppression;
+- tracker/counter update;
+- overlay/React callback;
+- total sample and total run wall time; and
+- peak/steady memory where the browser exposes it.
+
+Report count, median, p95, sum, and stage share. The stage sums must reconcile with total wall time within measurement overhead. Always record actual backend, dtype, fallback history, isolation state, thread count, model/profile, zones, confidence, and sampling rate.
+
+Create a short fixed clip benchmark plus an adjudicated event list. Run 5/10/15 sampling, CPU/GPU/Auto, Standard/Night, and representative ROI sizes. A candidate optimization is accepted only when repeated warm runs improve the targeted stage and total wall time without regressing matched-event precision/recall, track fragmentation, or count stability.
+
+### Perf 1 — fix sampling-dependent tracking before tuning throughput
+
+- Separate `pendingCrossings` from emitted `countedZones`; never render a pending crossing as final.
+- Express confirmation, occlusion tolerance, and retirement in video seconds, using actual timestamp deltas.
+- Make velocity prediction time-based.
+- Replace or validate greedy matching against a deterministic global assignment for crowded scenes.
+- Interpolate crossing timestamps between the bracketing real observations.
+- Expose diagnostic reasons for filtered detections, unmatched tracks, tentative retirement, bounded-line rejection, and pending-crossing loss.
+
+**Gate:** resampling the same adjudicated trajectory at 5/10/15 fps produces the same crossing identity, zone, class, and direction within declared tolerances. A checked overlay always corresponds to an emitted event.
+
+### Perf 2 — take the safe backend wins
+
+1. On each target machine, compare explicit WebGPU and CPU/WASM after warm-up; do not trust `Auto` without recording the resolved engine. The Dell’s integrated graphics may support WebGPU, but browser, driver, policy, and adapter availability must be observed.
+2. Benchmark WASM with 1, 2, and up to 4 threads under verified cross-origin isolation.
+3. Because multi-thread initialization has previously been unstable, run the detector in a terminable worker. If worker initialization or a warm-up inference fails, recreate it with fewer threads and record the fallback.
+4. Ship COOP/COEP and the other required headers from the actual production server, not only Vite.
+5. Evaluate an FP16 WebGPU export when `shader-f16` is available, with box/score/count parity gates against FP32.
+
+No dedicated GPU purchase is justified before these measurements. CPU q8 already exists, and integrated WebGPU or safely threaded WASM may be sufficient. WebNN/NPU should remain an optional experiment until supported browsers and measured benefit justify another backend.
+
+### Perf 3 — remove repeated seeking and pipeline frame work
+
+The largest architectural experiment is sequential timestamp-aware decoding with WebCodecs and an appropriate local demuxer:
+
+- decode source frames once in order rather than assigning `video.currentTime` for every sample;
+- select exact target timestamps deterministically;
+- transfer `VideoFrame`/`ImageBitmap` objects to a worker;
+- use a bounded decode/preprocess queue so decoding can overlap inference;
+- release frames immediately and bound memory; and
+- feed detector outputs back to the counter strictly in timestamp order.
+
+Keep the existing seek path as the reference until the new path matches requested/actual timestamp tolerances, detections, events, supported containers/codecs, cancellation behavior, and memory bounds. Merely moving work to a worker improves responsiveness but not total wall time unless it also enables multithreading, lower-copy processing, or stage overlap.
+
+### Perf 4 — remove avoidable copies and repeated UI work
+
+- Replace the generic image processor only after a direct, pooled tensor builder is proven pixel-equivalent for resize, padding, normalization, and layout.
+- Reuse typed arrays and canvases rather than allocating multiple 640×640 RGBA/RGB/float/CHW/batch buffers per sample.
+- Investigate ONNX/WebGPU tensor I/O binding where the supported runtime can avoid CPU round trips.
+- Maintain event aggregates incrementally instead of resummarizing the complete event list every sample.
+- Avoid cloning full track trails for consumers that do not need them.
+- Throttle React progress/overlay presentation independently of analytical sampling, while still rendering final and requested inspection frames.
+
+### Perf 5 — benchmark lower model work only behind accuracy gates
+
+Test, in order:
+
+1. a validated FP16 WebGPU model;
+2. 512- or 416-pixel detector exports;
+3. small WebGPU batches if the exported model supports dynamic batching; and
+4. only then alternative compact detectors.
+
+Lower detector resolution is likely to hurt the far/small vehicles that already drive misses, so wall-time improvement alone is insufficient. Every model/input candidate must pass the representative-video benchmark by lighting, distance, class, direction, and occlusion subgroup.
+
+## Immediate operator guidance
+
+Until the changes above are implemented:
+
+- use YOLOv10-N;
+- use **Auto** only if the header resolves to **GPU**; otherwise explicitly compare GPU and CPU once on the target machine;
+- prefer 5–10 sampling fps for turnaround rather than 15, but do not assume identical counts—the local comparison above proved they can differ;
+- use the smallest correct zone union for object scale, not as a promised inference-speed control;
+- reserve Night preprocessing for footage where its measured detection benefit outweighs any cost; and
+- treat a box or check mark as diagnostic UI, not authoritative evidence. The exported event set is the current count contract, and that contract still needs the Perf 1 fixes and real-video validation.
 
 ---
 

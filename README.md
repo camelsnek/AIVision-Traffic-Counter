@@ -37,7 +37,7 @@ npm run dev
 
 Presenter materials are available in [English](PRESENTATION.md) and [Czech](PRESENTATION_CS.md). See [`web/README.md`](web/README.md) for operation, model, validation, and counting details.
 
-The deferred O/NA/K/M/A classifier work and the prioritized path from the current pilot to a validated production tool are recorded in the [production roadmap](docs/PRODUCTION_ROADMAP.md).
+The deferred O/NA/K/M/A classifier work, measured performance investigation, and prioritized path from the current pilot to a validated production tool are recorded in the [production roadmap](docs/PRODUCTION_ROADMAP.md).
 
 ## Flutter scaffold
 

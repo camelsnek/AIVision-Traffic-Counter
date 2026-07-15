@@ -64,7 +64,7 @@ The test suite covers geometry, event aggregation, directional flow buckets and 
 
 Pixel-level preprocessing tests additionally cover the Standard identity path, local contrast enhancement, alpha and chroma preservation, non-divisible frame dimensions, malformed inputs, determinism, and exported profile metadata.
 
-The automated tests prove software behavior, not field accuracy. See the [production roadmap](../docs/PRODUCTION_ROADMAP.md) for the deferred O/NA/K/M/A classifier plan, real-video validation gates, session auditability, recovery, and release hardening.
+The automated tests prove software behavior, not field accuracy. See the [production roadmap](../docs/PRODUCTION_ROADMAP.md) for the performance and count-stability investigation, deferred O/NA/K/M/A classifier plan, real-video validation gates, session auditability, recovery, and release hardening.
 
 ## Counting model
 
