@@ -1,6 +1,6 @@
 # AIVision Traffic Counter — Web
 
-The production-ready browser application in this repository. It analyzes a local road video entirely on-device, detects vehicles with YOLOv10, tracks them across deterministic video-time samples, and counts a vehicle only when its track crosses a configured counting line.
+This repository's production-oriented browser application analyzes a local road video entirely on-device, detects vehicles with YOLOv10, tracks them across deterministic video-time samples, and counts a vehicle only when its track crosses a configured counting line. It is a capable pilot; authoritative workplace use still requires the validation, audit, persistence, and deployment gates in the [production roadmap](../docs/PRODUCTION_ROADMAP.md).
 
 No video is uploaded to a server.
 
@@ -63,6 +63,8 @@ npm run build
 The test suite covers geometry, event aggregation, directional flow buckets and rendering, exports, and the tracking/counting contracts: horizontal and vertical bidirectional crossings, mixed-orientation zones, one count per track, stationary-object rejection, detection gaps, parallel vehicles, tentative tracks, class voting, and zone bounds.
 
 Pixel-level preprocessing tests additionally cover the Standard identity path, local contrast enhancement, alpha and chroma preservation, non-divisible frame dimensions, malformed inputs, determinism, and exported profile metadata.
+
+The automated tests prove software behavior, not field accuracy. See the [production roadmap](../docs/PRODUCTION_ROADMAP.md) for the deferred O/NA/K/M/A classifier plan, real-video validation gates, session auditability, recovery, and release hardening.
 
 ## Counting model
 

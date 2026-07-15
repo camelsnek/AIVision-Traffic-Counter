@@ -37,6 +37,8 @@ npm run dev
 
 Presenter materials are available in [English](PRESENTATION.md) and [Czech](PRESENTATION_CS.md). See [`web/README.md`](web/README.md) for operation, model, validation, and counting details.
 
+The deferred O/NA/K/M/A classifier work and the prioritized path from the current pilot to a validated production tool are recorded in the [production roadmap](docs/PRODUCTION_ROADMAP.md).
+
 ## Flutter scaffold
 
 The Flutter sources provide a future mobile shell with home, live scan, imported-video, and results flows. They also define a `VehicleInferenceService` abstraction, a mock implementation, and Android/iOS method-channel stubs for eventual native ONNX Runtime integration.
