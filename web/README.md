@@ -42,9 +42,10 @@ Summary CSV and JSON exports preserve each zone's orientation and all four direc
 - **GPU — WebGPU** requires a current browser and working hardware acceleration. The option is marked unavailable when the browser cannot obtain an adapter. An explicit GPU choice never silently runs on the CPU.
 - **CPU — WebAssembly** uses the quantized model in the most compatible single-threaded runtime. It is reliable but normally slower.
 - **YOLOv10-N** is the performance-oriented model; YOLOv10-M is substantially heavier.
-- **Sampling rate** controls how many video timestamps are analyzed. Reducing it from 10 to 5 fps roughly halves the number of detector calls. The processor now overlaps decoding the next timestamp with current-frame model execution, so total time is bounded primarily by the slower stage rather than their sum.
+- **Sampling rate** controls how many video timestamps are analyzed. Reducing it from 10 to 5 fps roughly halves the number of detector calls. Snapshot-capable browsers keep a bounded queue of up to two immutable decoded frames ahead of the detector; detector calls, tracking, and counting remain strictly ordered.
+- Visible frame and overlay publication is capped at 20 wall-clock fps independently of analytical sampling. Every configured timestamp is still detected and counted, while event frames and the final frame are always published.
 
-The live metrics separate **analysis fps** (completed samples per wall-clock second), **detector** time (crop through postprocessing), pure **ONNX** execution, and **seek** time. After the first sample, seek/decode runs concurrently with the preceding detector call, so seek and detector milliseconds intentionally overlap and must not be added together.
+The live metrics separate **analysis fps** (a rolling completed-sample rate), **detector** time (crop through postprocessing), pure **ONNX** execution, and **seek** time. Frame preparation can run ahead of detector execution, so seek and detector milliseconds intentionally overlap and must not be added together.
 
 ## Night image processing
 

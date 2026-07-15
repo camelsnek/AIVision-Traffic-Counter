@@ -302,7 +302,6 @@ export function useTrafficAnalysis(): TrafficAnalysis {
 
     const processor = new VideoProcessor(video, frame, detector, config, {
       onFrame: (update) => {
-        setFrameVisible(true)
         tracksRef.current = update.tracks
         if (update.newEvents.length > 0) {
           eventsRef.current.push(...update.newEvents)
@@ -316,15 +315,18 @@ export function useTrafficAnalysis(): TrafficAnalysis {
           timings: update.timings,
           throughputFps: update.throughputFps,
         })
-        const overlay = overlayRef.current
-        if (overlay) {
-          drawOverlay(overlay, {
-            tracks: update.tracks,
-            zones: config.zones,
-            counts: liveCountsRef.current,
-            activeZoneId: null,
-            editing: false,
-          })
+        if (update.presented) {
+          setFrameVisible(true)
+          const overlay = overlayRef.current
+          if (overlay) {
+            drawOverlay(overlay, {
+              tracks: update.tracks,
+              zones: config.zones,
+              counts: liveCountsRef.current,
+              activeZoneId: null,
+              editing: false,
+            })
+          }
         }
       },
       onDone: (reason) => {

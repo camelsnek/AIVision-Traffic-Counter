@@ -42,7 +42,7 @@ export function TopBar({ status, engine, preprocessingProfileId, progress }: Top
       <div className="topbar-status">
         {status === 'running' && (
           <div className="live-stats">
-            <span className="stat" title="Completed analyzed samples per wall-clock second">
+            <span className="stat" title="Rolling completed-sample rate over up to 16 analysis completions">
               <span className="stat-value">{progress.throughputFps.toFixed(1)}</span> analysis fps
             </span>
             <span className="stat" title="Full detector path: capture, preprocessing, ONNX, and postprocessing">
@@ -51,7 +51,7 @@ export function TopBar({ status, engine, preprocessingProfileId, progress }: Top
             <span className="stat" title="ONNX model execution only">
               <span className="stat-value">{Math.round(progress.timings.detector.inferenceMs)}</span> ms ONNX
             </span>
-            <span className="stat" title="Video seek and decode; later seeks overlap the previous detector call">
+            <span className="stat" title="Precise video seek/decode with up to two immutable frames prepared ahead">
               <span className="stat-value">{Math.round(progress.timings.seekMs)}</span> ms seek
             </span>
           </div>

@@ -1,11 +1,14 @@
 import { TrafficCounter } from '../lib/trafficCounter'
 import { clampRect, padRect, rectUnion } from '../lib/geometry'
+import { RollingCompletionRate } from '../lib/rollingCompletionRate'
 import type { AnalysisConfig, CountEvent, RectNorm, TrackSnapshot } from '../types'
 import type { DetectorResult, DetectorTimings } from './vehicleDetector'
 
 export interface DetectorRunner {
   detect(
-    video: HTMLVideoElement,
+    source: CanvasImageSource,
+    frameWidth: number,
+    frameHeight: number,
     roi: RectNorm,
     minConfidence: number,
     preprocessingProfileId: AnalysisConfig['preprocessingProfileId'],
@@ -13,7 +16,7 @@ export interface DetectorRunner {
 }
 
 export interface FrameTimings {
-  /** Seek/decode wall time for this sample; later seeks may overlap the previous detector call. */
+  /** Seek/decode wall time for this sample; immutable frames permit bounded look-ahead. */
   seekMs: number
   /** Copy of the analyzed frame into the reusable presentation buffer. */
   frameCaptureMs: number
@@ -30,10 +33,12 @@ export interface FrameUpdate {
   durationSeconds: number
   /** 0..1 share of the video processed so far. */
   progress: number
+  /** Whether this completion published a matching frame and overlay update. */
+  presented: boolean
   tracks: TrackSnapshot[]
   newEvents: CountEvent[]
   timings: FrameTimings
-  /** Analyzed frames per wall-clock second, smoothed. */
+  /** Rolling rate over up to 16 completed analyzed frames. */
   throughputFps: number
 }
 
@@ -45,11 +50,13 @@ export interface ProcessorHooks {
   onError(error: Error): void
 }
 
+
 /** Padding added around the union of zones for the detector's ROI crop. */
 const ROI_PADDING = 0.04
 /** If the padded zone union covers most of the frame, analyze the full frame. */
 const FULL_FRAME_COVERAGE = 0.82
 const SEEK_TIMEOUT_MS = 8000
+const MIN_PRESENTATION_INTERVAL_MS = 50
 
 /**
  * Deterministic offline analysis: steps through the video by seeking fixed
@@ -62,12 +69,16 @@ const SEEK_TIMEOUT_MS = 8000
 export class VideoProcessor {
   private readonly video: HTMLVideoElement
   private readonly displayCanvas: HTMLCanvasElement
+  private readonly displayContext: CanvasRenderingContext2D
   private readonly detector: DetectorRunner
   private readonly config: AnalysisConfig
   private readonly hooks: ProcessorHooks
   private readonly counter: TrafficCounter
   private readonly roi: RectNorm
   private readonly presentationCanvas = document.createElement('canvas')
+  private readonly presentationContext: CanvasRenderingContext2D
+  private snapshotQueue: FrameSampleQueue | null = null
+  private lastPresentationAt: number | null = null
   private stopped = false
   private running = false
 
@@ -78,13 +89,21 @@ export class VideoProcessor {
     config: AnalysisConfig,
     hooks: ProcessorHooks,
   ) {
+    const displayContext = displayCanvas.getContext('2d')
+    const presentationContext = this.presentationCanvas.getContext('2d')
+    if (!displayContext || !presentationContext) {
+      throw new Error('Unable to prepare frame canvases for video analysis.')
+    }
+
     this.video = video
     this.displayCanvas = displayCanvas
+    this.displayContext = displayContext
     this.detector = detector
     this.config = config
     this.hooks = hooks
     this.counter = new TrafficCounter(config.zones)
     this.roi = resolveRegionOfInterest(config.zones.map((zone) => zone.region))
+    this.presentationContext = presentationContext
   }
 
   /** Begins processing from the start of the video. Resolves when done. */
@@ -103,13 +122,74 @@ export class VideoProcessor {
     }
 
     this.video.pause()
-    let throughputFps = 0
-    let lastWallTime = performance.now()
-    let pendingSeek = startTimedSeek(this.video, 0)
+    try {
+      if (supportsImmutableVideoFrames(this.video)) {
+        await this.runSnapshotPipeline(duration, stepSeconds)
+      } else {
+        await this.runLiveVideoPipeline(duration, stepSeconds)
+      }
+      this.hooks.onDone(this.stopped ? 'stopped' : 'complete')
+    } catch (error) {
+      this.hooks.onError(error instanceof Error ? error : new Error('Video analysis failed.'))
+    } finally {
+      this.snapshotQueue?.cancel()
+      this.snapshotQueue = null
+      this.running = false
+    }
+  }
+
+  /** Requests a stop and releases any decoded frames waiting in the queue. */
+  stop() {
+    this.stopped = true
+    this.snapshotQueue?.cancel()
+  }
+
+  /**
+   * Modern browsers expose immutable VideoFrame snapshots. A bounded producer
+   * can therefore continue seeking without mutating frames still being
+   * analyzed, while the consumer preserves strict timestamp commit order.
+   */
+  private async runSnapshotPipeline(duration: number, stepSeconds: number): Promise<void> {
+    const queue = new FrameSampleQueue(2)
+    const completionRate = new RollingCompletionRate()
+    this.snapshotQueue = queue
+    const producer = this.produceSnapshotFrames(queue, duration, stepSeconds)
 
     try {
+      while (!this.stopped) {
+        const sample = await queue.take()
+        if (!sample) {
+          break
+        }
+        await this.analyzeSnapshot(sample, duration, completionRate)
+      }
+      if (this.stopped) {
+        queue.cancel()
+      }
+      await producer
+    } catch (error) {
+      queue.cancel()
+      await producer
+      throw error
+    } finally {
+      queue.cancel()
+      if (this.snapshotQueue === queue) {
+        this.snapshotQueue = null
+      }
+    }
+  }
+
+  private async produceSnapshotFrames(
+    queue: FrameSampleQueue,
+    duration: number,
+    stepSeconds: number,
+  ): Promise<void> {
+    try {
       for (let time = 0; time <= duration && !this.stopped; time += stepSeconds) {
-        const seek = await pendingSeek
+        if (!(await queue.waitForSpace()) || this.stopped) {
+          break
+        }
+        const seek = await startTimedSeek(this.video, Math.min(time, duration))
         if (seek.error) {
           throw seek.error
         }
@@ -117,71 +197,142 @@ export class VideoProcessor {
           break
         }
 
-        const sampleVideoTime = this.video.currentTime
-        const frameCaptureMs = this.capturePresentationFrame()
-
-        // detect() synchronously captures its ROI before returning a promise.
-        // The same video can therefore start decoding the next timestamp while
-        // the processor and ONNX runtime work on immutable current-frame pixels.
-        const detectionPromise = this.detector.detect(
-          this.video,
-          this.roi,
-          this.config.confidence,
-          this.config.preprocessingProfileId,
-        )
-
-        const nextTime = time + stepSeconds
-        const nextSeek =
-          nextTime <= duration && !this.stopped
-            ? startTimedSeek(this.video, Math.min(nextTime, duration))
-            : null
-
-        const detectorResult = await detectionPromise
-        const counterStart = performance.now()
-        const { tracks, events } = this.counter.update(detectorResult.detections, sampleVideoTime)
-        const counterMs = performance.now() - counterStart
-        const displayMs = this.presentFrame()
-
-        const now = performance.now()
-        const frameIntervalMs = Math.max(1, now - lastWallTime)
-        const instantFps = 1000 / frameIntervalMs
-        throughputFps = throughputFps === 0 ? instantFps : throughputFps * 0.85 + instantFps * 0.15
-        lastWallTime = now
-
-        this.hooks.onFrame({
-          videoTime: sampleVideoTime,
-          durationSeconds: duration,
-          progress: Math.min(1, time / duration),
-          tracks,
-          newEvents: events,
-          timings: {
-            seekMs: seek.ms,
-            frameCaptureMs,
-            detector: detectorResult.timings,
-            counterMs,
-            displayMs,
-            frameIntervalMs,
-          },
-          throughputFps,
+        const source = new VideoFrame(this.video)
+        queue.push({
+          source,
+          targetTime: time,
+          finalSample: time + stepSeconds > duration,
+          videoTime: seek.videoTime,
+          frameWidth: this.video.videoWidth,
+          frameHeight: this.video.videoHeight,
+          seekMs: seek.ms,
         })
-
-        pendingSeek = nextSeek ?? Promise.resolve({ ms: 0, error: null })
       }
-
-      this.hooks.onDone(this.stopped ? 'stopped' : 'complete')
+      queue.finish()
     } catch (error) {
-      this.hooks.onError(error instanceof Error ? error : new Error('Video analysis failed.'))
-    } finally {
-      this.running = false
+      queue.finish(error instanceof Error ? error : new Error('Video frame preparation failed.'))
     }
   }
 
-  /** Requests a stop; the loop exits at the next step boundary. */
-  stop() {
-    this.stopped = true
+  private async analyzeSnapshot(
+    sample: FrameSample,
+    duration: number,
+    completionRate: RollingCompletionRate,
+  ): Promise<void> {
+    try {
+      const detectorResult = await this.detector.detect(
+        sample.source,
+        sample.frameWidth,
+        sample.frameHeight,
+        this.roi,
+        this.config.confidence,
+        this.config.preprocessingProfileId,
+      )
+      this.commitFrame(sample, detectorResult, duration, completionRate, sample.source)
+    } finally {
+      sample.source.close()
+    }
   }
 
-  private capturePresentationFrame(): number {
+  /** Compatibility path for browsers that cannot snapshot a decoded frame. */
+  private async runLiveVideoPipeline(duration: number, stepSeconds: number): Promise<void> {
+    const completionRate = new RollingCompletionRate()
+    let pendingSeek = startTimedSeek(this.video, 0)
+
+    for (let time = 0; time <= duration && !this.stopped; time += stepSeconds) {
+      const seek = await pendingSeek
+      if (seek.error) {
+        throw seek.error
+      }
+      if (this.stopped) {
+        break
+      }
+
+      const sample: FrameSampleMetadata = {
+        targetTime: time,
+        finalSample: time + stepSeconds > duration,
+        videoTime: this.video.currentTime,
+        frameWidth: this.video.videoWidth,
+        frameHeight: this.video.videoHeight,
+        seekMs: seek.ms,
+      }
+      const frameCaptureMs = this.capturePresentationFrame(this.video)
+      const detectionPromise = this.detector.detect(
+        this.video,
+        sample.frameWidth,
+        sample.frameHeight,
+        this.roi,
+        this.config.confidence,
+        this.config.preprocessingProfileId,
+      )
+
+      const nextTime = time + stepSeconds
+      const nextSeek =
+        nextTime <= duration && !this.stopped
+          ? startTimedSeek(this.video, Math.min(nextTime, duration))
+          : null
+
+      const detectorResult = await detectionPromise
+      this.commitFrame(sample, detectorResult, duration, completionRate, null, frameCaptureMs)
+      pendingSeek =
+        nextSeek ?? Promise.resolve({ ms: 0, error: null, videoTime: this.video.currentTime })
+    }
+  }
+
+  private commitFrame(
+    sample: FrameSampleMetadata,
+    detectorResult: DetectorResult,
+    duration: number,
+    completionRate: RollingCompletionRate,
+    presentationSource: CanvasImageSource | null,
+    capturedFrameMs = 0,
+  ) {
+    const counterStart = performance.now()
+    const { tracks, events } = this.counter.update(detectorResult.detections, sample.videoTime)
+    const counterMs = performance.now() - counterStart
+    const shouldPresent =
+      presentationSource === null || this.shouldPresent(sample, events, performance.now())
+    const frameCaptureMs =
+      shouldPresent && presentationSource ? this.capturePresentationFrame(presentationSource) : capturedFrameMs
+    const displayMs = shouldPresent ? this.presentFrame() : 0
+    if (shouldPresent) {
+      this.lastPresentationAt = performance.now()
+    }
+    const completion = completionRate.record(performance.now())
+
+    this.hooks.onFrame({
+      videoTime: sample.videoTime,
+      durationSeconds: duration,
+      progress: Math.min(1, sample.targetTime / duration),
+      presented: shouldPresent,
+      tracks,
+      newEvents: events,
+      timings: {
+        seekMs: sample.seekMs,
+        frameCaptureMs,
+        detector: detectorResult.timings,
+        counterMs,
+        displayMs,
+        frameIntervalMs: completion.intervalMs,
+      },
+      throughputFps: completion.ratePerSecond,
+    })
+  }
+
+  private shouldPresent(
+    sample: FrameSampleMetadata,
+    events: readonly CountEvent[],
+    now: number,
+  ): boolean {
+    return (
+      this.lastPresentationAt === null ||
+      events.length > 0 ||
+      sample.finalSample ||
+      now - this.lastPresentationAt >= MIN_PRESENTATION_INTERVAL_MS
+    )
+  }
+
+  private capturePresentationFrame(source: CanvasImageSource): number {
     const startedAt = performance.now()
     const width = this.displayCanvas.width || this.video.videoWidth
     const height = this.displayCanvas.height || this.video.videoHeight
@@ -191,41 +342,132 @@ export class VideoProcessor {
     if (this.presentationCanvas.height !== height) {
       this.presentationCanvas.height = height
     }
-    const context = this.presentationCanvas.getContext('2d')
-    if (!context) {
-      throw new Error('Unable to capture the analyzed video frame.')
-    }
-    context.drawImage(this.video, 0, 0, width, height)
+    this.presentationContext.drawImage(source, 0, 0, width, height)
     return performance.now() - startedAt
   }
 
   private presentFrame(): number {
     const startedAt = performance.now()
-    const context = this.displayCanvas.getContext('2d')
-    if (!context) {
-      throw new Error('Unable to display the analyzed video frame.')
-    }
-    context.clearRect(0, 0, this.displayCanvas.width, this.displayCanvas.height)
-    context.drawImage(this.presentationCanvas, 0, 0)
+    this.displayContext.drawImage(this.presentationCanvas, 0, 0)
     return performance.now() - startedAt
+  }
+}
+
+interface FrameSampleMetadata {
+  targetTime: number
+  finalSample: boolean
+  videoTime: number
+  frameWidth: number
+  frameHeight: number
+  seekMs: number
+}
+
+interface FrameSample extends FrameSampleMetadata {
+  source: VideoFrame
+}
+
+class FrameSampleQueue {
+  private readonly items: FrameSample[] = []
+  private readonly capacity: number
+  private closed = false
+  private error: Error | null = null
+  private itemWaiter: (() => void) | null = null
+  private spaceWaiter: (() => void) | null = null
+
+  constructor(capacity: number) {
+    this.capacity = capacity
+  }
+
+  async waitForSpace(): Promise<boolean> {
+    while (!this.closed && this.items.length >= this.capacity) {
+      await new Promise<void>((resolve) => {
+        this.spaceWaiter = resolve
+      })
+    }
+    return !this.closed
+  }
+
+  push(sample: FrameSample) {
+    if (this.closed || this.items.length >= this.capacity) {
+      sample.source.close()
+      throw new Error('Decoded frame queue rejected a frame.')
+    }
+    this.items.push(sample)
+    this.itemWaiter?.()
+    this.itemWaiter = null
+  }
+
+  async take(): Promise<FrameSample | null> {
+    while (this.items.length === 0 && !this.closed) {
+      await new Promise<void>((resolve) => {
+        this.itemWaiter = resolve
+      })
+    }
+    const sample = this.items.shift()
+    if (sample) {
+      this.spaceWaiter?.()
+      this.spaceWaiter = null
+      return sample
+    }
+    if (this.error) {
+      throw this.error
+    }
+    return null
+  }
+
+  finish(error: Error | null = null) {
+    this.closed = true
+    this.error = error
+    this.itemWaiter?.()
+    this.itemWaiter = null
+    this.spaceWaiter?.()
+    this.spaceWaiter = null
+  }
+
+  cancel() {
+    this.closed = true
+    for (const sample of this.items) {
+      sample.source.close()
+    }
+    this.items.length = 0
+    this.itemWaiter?.()
+    this.itemWaiter = null
+    this.spaceWaiter?.()
+    this.spaceWaiter = null
+  }
+}
+
+function supportsImmutableVideoFrames(video: HTMLVideoElement): boolean {
+  if (typeof VideoFrame !== 'function') {
+    return false
+  }
+  try {
+    const frame = new VideoFrame(video)
+    frame.close()
+    return true
+  } catch {
+    return false
   }
 }
 
 interface SeekOutcome {
   ms: number
   error: Error | null
+  videoTime: number
 }
 
 function startTimedSeek(video: HTMLVideoElement, time: number): Promise<SeekOutcome> {
   const startedAt = performance.now()
   return seekTo(video, time).then(
-    () => ({ ms: performance.now() - startedAt, error: null }),
+    () => ({ ms: performance.now() - startedAt, error: null, videoTime: video.currentTime }),
     (error: unknown) => ({
       ms: performance.now() - startedAt,
       error: error instanceof Error ? error : new Error('Video seeking failed.'),
+      videoTime: video.currentTime,
     }),
   )
 }
+
 
 function resolveRegionOfInterest(regions: readonly RectNorm[]): RectNorm {
   const padded = clampRect(padRect(rectUnion(regions), ROI_PADDING))

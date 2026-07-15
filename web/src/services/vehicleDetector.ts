@@ -102,10 +102,16 @@ export class VehicleDetector {
   private readonly model: PreTrainedModel
   private readonly labelById: Map<number, string>
   private readonly cropCanvas = document.createElement('canvas')
+  private readonly cropContext: CanvasRenderingContext2D
   private readonly inputBuffer = new Float32Array(3 * YOLO_INPUT_EDGE * YOLO_INPUT_EDGE)
   private readonly inputTensor = new Tensor('float32', this.inputBuffer, [1, 3, YOLO_INPUT_EDGE, YOLO_INPUT_EDGE])
 
   private constructor(info: EngineInfo, model: PreTrainedModel) {
+    const cropContext = this.cropCanvas.getContext('2d')
+    if (!cropContext) {
+      throw new Error('Unable to prepare frames for the detector.')
+    }
+    this.cropContext = cropContext
     this.info = info
     this.model = model
     this.labelById = readLabelMap(model.config)
@@ -159,19 +165,19 @@ export class VehicleDetector {
   }
 
   /**
-   * Captures the current video frame synchronously, then processes the
-   * immutable pixels asynchronously. Once this method returns its promise,
-   * callers may safely seek the video while model work is still running.
+   * Captures pixels from an immutable or currently stable frame synchronously,
+   * then performs model work asynchronously. Callers may release a VideoFrame
+   * or advance an HTMLVideoElement as soon as this method returns its promise.
    */
   detect(
-    video: HTMLVideoElement,
+    source: CanvasImageSource,
+    frameWidth: number,
+    frameHeight: number,
     roi: RectNorm,
     minConfidence: number,
     preprocessingProfileId: PreprocessingProfileId,
   ): Promise<DetectorResult> {
     const totalStart = performance.now()
-    const frameWidth = video.videoWidth
-    const frameHeight = video.videoHeight
     if (!frameWidth || !frameHeight) {
       throw new Error('Video frame is not ready yet.')
     }
@@ -192,14 +198,19 @@ export class VehicleDetector {
       this.cropCanvas.height = cropHeight
     }
 
-    const context = this.cropCanvas.getContext('2d', { willReadFrequently: true })
-    if (!context) {
-      throw new Error('Unable to prepare a frame for the detector.')
-    }
-
     const captureStart = performance.now()
-    context.drawImage(video, sourceLeft, sourceTop, sourceWidth, sourceHeight, 0, 0, cropWidth, cropHeight)
-    const sourcePixels = context.getImageData(0, 0, cropWidth, cropHeight).data
+    this.cropContext.drawImage(
+      source,
+      sourceLeft,
+      sourceTop,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      cropWidth,
+      cropHeight,
+    )
+    const sourcePixels = this.cropContext.getImageData(0, 0, cropWidth, cropHeight).data
     const captureMs = performance.now() - captureStart
 
     const preprocessingStart = performance.now()

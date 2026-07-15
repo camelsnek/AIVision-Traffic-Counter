@@ -25,6 +25,7 @@ class FakeVideo extends EventTarget {
   readonly videoWidth = 1920
   readonly videoHeight = 1080
   readonly log: string[] = []
+  onSeek: ((value: number) => void) | null = null
   private time = 0
 
   get currentTime() {
@@ -34,6 +35,7 @@ class FakeVideo extends EventTarget {
   set currentTime(value: number) {
     this.time = value
     this.log.push(`seek:${value.toFixed(4)}`)
+    this.onSeek?.(value)
     queueMicrotask(() => this.dispatchEvent(new Event('seeked')))
   }
 
@@ -86,9 +88,10 @@ describe('VideoProcessor seek pipeline', () => {
     const detectionResults = Array.from({ length: 3 }, () => Promise.withResolvers<DetectorResult>())
     let detectionIndex = 0
     const detector = {
-      detect(source: HTMLVideoElement) {
+      detect(source: CanvasImageSource, frameWidth: number, frameHeight: number) {
         const index = detectionIndex++
-        const sampleTime = source.currentTime
+        const sampleTime = (source as unknown as FakeVideo).currentTime
+        expect([frameWidth, frameHeight]).toEqual([1920, 1080])
         log.push(`detect-start:${sampleTime.toFixed(4)}`)
         detectionStarts[index].resolve()
         return detectionResults[index].promise.then((result) => {
@@ -136,11 +139,104 @@ describe('VideoProcessor seek pipeline', () => {
 
     expect(endReason).toBe('complete')
     expect(frames.map((frame) => frame.videoTime)).toEqual([0.0001, 0.2, 0.4])
-    expect(frames.every((frame) => frame.seekMs >= 0 && frame.frameIntervalMs >= 1)).toBe(true)
+    expect(frames[0].frameIntervalMs).toBe(0)
+    expect(frames.slice(1).every((frame) => frame.seekMs >= 0 && frame.frameIntervalMs > 0)).toBe(true)
     expect(log.indexOf('seek:0.2000')).toBeLessThan(log.indexOf('detect-end:0.0001'))
     expect(log.indexOf('frame:0.0001')).toBeLessThan(log.indexOf('detect-start:0.2000'))
     expect(log.indexOf('seek:0.4000')).toBeLessThan(log.indexOf('detect-end:0.2000'))
     expect(displayCanvas.draws).toHaveLength(3)
     expect(presentationCanvas.draws).toHaveLength(3)
   })
+
+  it('queues immutable decoded frames while preserving sequential detector calls and timestamps', async () => {
+    const presentationCanvas = new FakeCanvas()
+    const displayCanvas = new FakeCanvas()
+    let nowMs = 0
+    vi.stubGlobal('document', { createElement: () => presentationCanvas })
+    vi.stubGlobal('window', { setTimeout: () => 1, clearTimeout: () => undefined })
+    vi.stubGlobal('performance', { now: () => nowMs })
+
+    const video = new FakeVideo()
+    const thirdSeekStarted = Promise.withResolvers<void>()
+    video.onSeek = (value) => {
+      if (Math.abs(value - 0.4) < 1e-6) {
+        thirdSeekStarted.resolve()
+      }
+    }
+
+    const capturedFrames: FakeVideoFrame[] = []
+    class FakeVideoFrame {
+      readonly sampleTime: number
+      closed = false
+
+      constructor(source: FakeVideo) {
+        this.sampleTime = source.currentTime
+        capturedFrames.push(this)
+      }
+
+      close() {
+        this.closed = true
+      }
+    }
+    vi.stubGlobal('VideoFrame', FakeVideoFrame)
+
+    const detectionStarts = Array.from({ length: 3 }, () => Promise.withResolvers<void>())
+    const detectionResults = Array.from({ length: 3 }, () => Promise.withResolvers<DetectorResult>())
+    const detectionTimes: number[] = []
+    let detectionIndex = 0
+    const detector = {
+      detect(source: CanvasImageSource, frameWidth: number, frameHeight: number) {
+        const index = detectionIndex++
+        const sampleTime = (source as unknown as FakeVideoFrame).sampleTime
+        expect([frameWidth, frameHeight]).toEqual([1920, 1080])
+        detectionTimes.push(sampleTime)
+        detectionStarts[index].resolve()
+        return detectionResults[index].promise
+      },
+    }
+    const publishedTimes: number[] = []
+    const presentationStates: boolean[] = []
+
+    const processor = new VideoProcessor(
+      video as unknown as HTMLVideoElement,
+      displayCanvas as unknown as HTMLCanvasElement,
+      detector,
+      config,
+      {
+        onFrame: (update) => {
+          publishedTimes.push(update.videoTime)
+          presentationStates.push(update.presented)
+        },
+        onDone: () => undefined,
+        onError: (error) => {
+          throw error
+        },
+      },
+    )
+
+    const run = processor.run()
+    await detectionStarts[0].promise
+    await thirdSeekStarted.promise
+    expect(detectionTimes).toEqual([0.0001])
+
+    nowMs = 1
+    detectionResults[0].resolve(emptyResult)
+    await detectionStarts[1].promise
+    nowMs = 10
+    detectionResults[1].resolve(emptyResult)
+    await detectionStarts[2].promise
+    nowMs = 20
+    detectionResults[2].resolve(emptyResult)
+    await run
+
+    expect(detectionTimes).toEqual([0.0001, 0.2, 0.4])
+    expect(publishedTimes).toEqual([0.0001, 0.2, 0.4])
+    expect(presentationStates).toEqual([true, false, true])
+    expect(displayCanvas.draws).toHaveLength(2)
+    expect(presentationCanvas.draws).toHaveLength(2)
+    expect(capturedFrames).toHaveLength(4)
+    expect(capturedFrames.every((frame) => frame.closed)).toBe(true)
+    expect(displayCanvas.clears).toHaveLength(0)
+  })
+
 })

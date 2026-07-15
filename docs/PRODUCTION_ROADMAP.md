@@ -299,7 +299,7 @@ The main path in `VideoProcessor` and `VehicleDetector` performs the following w
 9. greedily associate tracks and copy snapshots/trails;
 10. update cached event aggregates when needed, update React state, clear the overlay, and redraw zones, trails, boxes, and labels.
 
-The next seek/decode now overlaps the preceding detector call, and the generic Transformers.js image processor and its intermediate RGB/float/pad/permute/batch allocations have been removed. There is still no bounded multi-frame decode queue or batch inference. CPU/WASM remains deliberately configured with `proxy = false` and `numThreads = 1`, even though threaded runtime assets are bundled. Vite supplies COOP/COEP only during development and preview; a built deployment receives those headers only if its real server is configured to add them.
+Snapshot-capable browsers now prepare a bounded queue of up to two immutable `VideoFrame` objects ahead of the detector. Inference, tracking, counting, and event publication remain sequential and timestamp ordered. The compatibility path still seeks one HTML video element and overlaps only the next seek with current inference. CPU/WASM remains deliberately configured with `proxy = false` and `numThreads = 1`, even though threaded runtime assets are bundled. Vite supplies COOP/COEP only during development and preview; a built deployment receives those headers only if its real server is configured to add them.
 
 The model input remains a fixed 640×640 tensor. A smaller source ROI can improve vehicle scale and reduce source-pixel readback, but it does not make the YOLO tensor smaller. Standard preprocessing avoids the extra Night CLAHE passes; Night preprocessing was previously measured at only a few milliseconds for the current 640-pixel-edge crop, so it is not a credible explanation for hundreds of milliseconds per sample.
 
@@ -314,7 +314,7 @@ The first performance branch now includes:
 - cached live counts, recomputed only after new events;
 - memoized flow-chart and session-total rendering;
 - allocation-free trail iteration in the overlay; and
-- separate live analysis-fps, detector, ONNX, and seek telemetry.
+- separate live rolling analysis-fps, detector, ONNX, and seek telemetry.
 
 On the same 15-second 1920×1080 CPU/WASM q8 excerpt used above, with 5 sampling fps, Standard preprocessing, confidence 0.35, and the default zone:
 
@@ -326,6 +326,17 @@ On the same 15-second 1920×1080 CPU/WASM q8 excerpt used above, with 5 sampling
 This short local run improved wall time by 12%, median completion interval by 14%, and p95 interval by 28%. The final intervals fell from roughly 369 ms to 271 ms instead of continuing to degrade. The complete event stream—track IDs, directions, classes, and timestamps—matched the pre-change run exactly on this clip.
 
 These are workstation results, not Dell PC16250 claims. Initial Dell and primary-desktop field measurements are recorded below; they are useful directional evidence but are not yet the controlled, repeated benchmark matrix required by Perf 0.
+
+## Second safe WebGPU optimization slice
+
+The next slice adds a bounded two-frame immutable snapshot queue, starts the next monotonic seek as soon as each snapshot is captured, and keeps detector calls and all counting state sequential. It also:
+
+- bypasses the CPU-oriented `willReadFrequently` canvas hint on the WebGPU detector path;
+- holds the current immutable frame until detector completion so presentation work can be skipped safely;
+- caps visible frame/overlay publication at 20 wall-clock fps while forcing event and final frames; and
+- replaces the instantaneous reciprocal metric with a rolling completed-sample rate over 16 finite, monotonic completions.
+
+One same-session, single-run WebGPU check of the 15-second excerpt at 10 sampling fps moved from 20.4 seconds before this slice to 18.8 seconds after it, with 22 events in both runs. The complete exported event sequence—track IDs, zones, classes, directions, and video timestamps—matched exactly. This is regression evidence, not a controlled hardware performance claim; repeated warm runs on the deployment workstation remain required.
 
 ### Field measurements after the first optimization slice — 2026-07-15
 
@@ -414,7 +425,7 @@ Keep the existing seek path as the reference until the new path matches requeste
 - Investigate ONNX/WebGPU tensor I/O binding where the supported runtime can avoid CPU round trips.
 - **Implemented:** cache live event aggregates and recompute them only when an event is emitted.
 - Avoid cloning full track trails for consumers that do not need them.
-- Throttle React progress/overlay presentation independently of analytical sampling, while still rendering final and requested inspection frames.
+- **Implemented:** cap frame/overlay presentation at 20 wall-clock fps independently of analytical sampling, while forcing event and final frames.
 
 ### Perf 5 — benchmark lower model work only behind accuracy gates
 
