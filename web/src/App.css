@@ -760,6 +760,34 @@
 
 /* Flow chart */
 
+.flow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 10px;
+}
+
+.flow-legend li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.flow-legend strong {
+  margin-left: 2px;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.flow-legend-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
 .flow-svg {
   display: block;
   width: 100%;
@@ -767,8 +795,36 @@
 }
 
 .flow-bar {
-  fill: var(--accent);
-  fill-opacity: 0.8;
+  fill-opacity: 0.82;
+  transition: fill-opacity 0.12s ease;
+}
+
+.flow-bar:hover {
+  fill-opacity: 1;
+}
+
+.flow-bar[data-direction='down'],
+.flow-legend-swatch[data-direction='down'] {
+  fill: #3ab3c6;
+  background: #3ab3c6;
+}
+
+.flow-bar[data-direction='up'],
+.flow-legend-swatch[data-direction='up'] {
+  fill: #f0a35b;
+  background: #f0a35b;
+}
+
+.flow-bar[data-direction='left'],
+.flow-legend-swatch[data-direction='left'] {
+  fill: #a78bfa;
+  background: #a78bfa;
+}
+
+.flow-bar[data-direction='right'],
+.flow-legend-swatch[data-direction='right'] {
+  fill: #8acb64;
+  background: #8acb64;
 }
 
 .flow-bar-empty {

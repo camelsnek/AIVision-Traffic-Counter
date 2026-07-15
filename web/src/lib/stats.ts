@@ -76,11 +76,13 @@ export function flowBuckets(
     start: index * length,
     length,
     count: 0,
+    byDirection: emptyDirectionCounts(),
   }))
 
   for (const event of events) {
     const index = Math.min(bucketCount - 1, Math.max(0, Math.floor(event.videoTime / length)))
     buckets[index].count += 1
+    buckets[index].byDirection[event.direction] += 1
   }
 
   return buckets

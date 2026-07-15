@@ -13,7 +13,7 @@ The maintained, runnable product is the React + Vite application under [`web/`](
 - tracks vehicles through short detection gaps;
 - counts confirmed tracks only when they cross an editable horizontal or vertical zone line;
 - separates upward, downward, leftward, and rightward screen motion;
-- reports per-class, per-zone, and time-bucket totals;
+- reports per-class and per-zone totals plus direction-split traffic-flow time buckets;
 - provides an optional, versioned Night profile for luminance-only local contrast enhancement; and
 - exports events and summaries as CSV or JSON, including the selected preprocessing profile.
 

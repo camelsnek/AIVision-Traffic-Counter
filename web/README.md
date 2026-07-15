@@ -13,7 +13,7 @@ No video is uploaded to a server.
 - Tracks tentative and confirmed vehicles through brief detection gaps.
 - Counts crossings in all four screen directions exactly once per vehicle and zone.
 - Supports editable rectangular zones with independently positioned horizontal or vertical counting lines.
-- Reports totals by class, direction, zone, and five-second flow bucket.
+- Reports totals by class, direction, and zone, plus grouped per-direction traffic-flow bars for each time bucket.
 - Exports event-level CSV, summary CSV, and full JSON results.
 - Keeps model weights and ONNX Runtime assets local; runtime CDN access is not required.
 
@@ -60,7 +60,7 @@ npm run lint
 npm run build
 ```
 
-The test suite covers geometry, event aggregation, exports, and the tracking/counting contracts: horizontal and vertical bidirectional crossings, mixed-orientation zones, one count per track, stationary-object rejection, detection gaps, parallel vehicles, tentative tracks, class voting, and zone bounds.
+The test suite covers geometry, event aggregation, directional flow buckets and rendering, exports, and the tracking/counting contracts: horizontal and vertical bidirectional crossings, mixed-orientation zones, one count per track, stationary-object rejection, detection gaps, parallel vehicles, tentative tracks, class voting, and zone bounds.
 
 Pixel-level preprocessing tests additionally cover the Standard identity path, local contrast enhancement, alpha and chroma preservation, non-divisible frame dimensions, malformed inputs, determinism, and exported profile metadata.
 

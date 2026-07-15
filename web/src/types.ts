@@ -125,6 +125,7 @@ export interface SessionCounts {
 }
 
 export interface FlowBucket {
+  byDirection: DirectionCounts
   /** Bucket start, video seconds. */
   start: number
   /** Bucket length, seconds. */

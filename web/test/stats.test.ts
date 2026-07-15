@@ -118,7 +118,7 @@ describe('flowBuckets', () => {
   it('chooses a 5s bucket length and places events in the right bucket', () => {
     const events: CountEvent[] = [
       event(1, { trackId: 1, zoneId: 'z1', vehicleClass: 'car', direction: 'down', videoTime: 0 }),
-      event(2, { trackId: 2, zoneId: 'z1', vehicleClass: 'car', direction: 'down', videoTime: 4.9 }),
+      event(2, { trackId: 2, zoneId: 'z1', vehicleClass: 'car', direction: 'up', videoTime: 4.9 }),
       event(3, { trackId: 3, zoneId: 'z1', vehicleClass: 'car', direction: 'down', videoTime: 5.0 }),
       event(4, { trackId: 4, zoneId: 'z1', vehicleClass: 'car', direction: 'down', videoTime: 119.9 }),
     ]
@@ -130,6 +130,8 @@ describe('flowBuckets', () => {
     expect(buckets[0].count).toBe(2) // t=0 and t=4.9
     expect(buckets[1].count).toBe(1) // t=5.0
     expect(buckets[23].count).toBe(1) // t=119.9
+    expect(buckets[0].byDirection).toEqual({ down: 1, up: 1, right: 0, left: 0 })
+    expect(buckets[1].byDirection).toEqual({ down: 1, up: 0, right: 0, left: 0 })
     const counted = buckets.reduce((sum, bucket) => sum + bucket.count, 0)
     expect(counted).toBe(4)
   })
