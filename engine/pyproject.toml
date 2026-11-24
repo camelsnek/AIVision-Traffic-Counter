@@ -19,9 +19,13 @@ dependencies = [
 # NVIDIA GPUs: CUDA + cuDNN runtime libraries come from pip, no CUDA toolkit install needed.
 # nvidia-cublas is pinned because newer builds ship no Windows wheel.
 cuda = [
-    "onnxruntime-gpu[cuda,cudnn]>=1.22",
+    "onnxruntime-gpu[cuda,cudnn]==1.32.0",
     "nvidia-cublas==13.10.0.20; sys_platform == 'win32'",
 ]
+# TensorRT is installed separately by setup-and-run.ps1 (`uv pip install`), not
+# locked here: tensorrt-cu13-libs is a source package that downloads ~2 GB from
+# NVIDIA at install time. ONNX Runtime 1.32 needs TensorRT 10 (nvinfer_10.dll):
+#   tensorrt-cu13-libs==10.16.1.11 tensorrt-cu13-bindings==10.16.1.11
 # Any DirectX 12 GPU on Windows (AMD, Intel, NVIDIA).
 directml = ["onnxruntime-directml>=1.20"]
 # CPU only (and the fallback for development machines).

@@ -1,216 +1,120 @@
+<#
+.SYNOPSIS
+    Installs (first run) and starts the AIVision traffic counter on Windows.
+
+.DESCRIPTION
+    1. Installs uv (Python package manager) for the current user if missing.
+    2. Creates engine\.venv with Python 3.12 and the matching ONNX Runtime:
+       NVIDIA GPU  -> CUDA + cuDNN + TensorRT (all from pip, no CUDA toolkit needed)
+       other GPU   -> DirectML
+       no GPU      -> CPU
+    3. Builds the web UI if Node.js is available and the build is missing or stale.
+    4. Downloads the default detection model on first use.
+    5. Starts the engine and opens http://localhost:8000.
+
+    Nothing is installed system-wide. Delete engine\.venv to start over.
+
+.PARAMETER Backend
+    auto (default), cuda, directml or cpu.
+
+.PARAMETER Port
+    HTTP port for the UI (default 8000).
+
+.PARAMETER NoBrowser
+    Do not open the browser.
+#>
 [CmdletBinding()]
 param(
-    [ValidateRange(1, 65535)]
-    [int]$Port = 5173,
-
-    [ValidateRange(5, 300)]
-    [int]$LaunchTimeoutSeconds = 90,
-
-    [switch]$SkipInstall,
+    [ValidateSet('auto', 'cuda', 'directml', 'cpu')]
+    [string]$Backend = 'auto',
+    [int]$Port = 8000,
     [switch]$NoBrowser
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$Root = $PSScriptRoot
+$Engine = Join-Path $Root 'engine'
+$Web = Join-Path $Root 'web'
+$Venv = Join-Path $Engine '.venv'
+$Python = Join-Path $Venv 'Scripts\python.exe'
+$Cli = Join-Path $Venv 'Scripts\aivision.exe'
+$TensorRtPackages = @('tensorrt-cu13-libs==10.16.1.11', 'tensorrt-cu13-bindings==10.16.1.11')
 
-$MinimumNode20 = [version]'20.19.0'
-$MinimumNode22 = [version]'22.12.0'
-$ProjectRoot = $PSScriptRoot
-$WebRoot = Join-Path $ProjectRoot 'web'
-$AppUrl = "http://localhost:$Port/"
+function Step($text) { Write-Host "`n==> $text" -ForegroundColor Yellow }
 
-function Write-Step {
-    param([Parameter(Mandatory = $true)][string]$Message)
-    Write-Host "`n==> $Message" -ForegroundColor Cyan
+# ------------------------------------------------------------------ uv
+$env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    Step 'Installing uv (Python package manager)'
+    Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+    $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 }
 
-function Update-ProcessPath {
-    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $env:Path = @($machinePath, $userPath) -join ';'
+# ------------------------------------------------------------- backend
+if ($Backend -eq 'auto') {
+    $gpuNames = (Get-CimInstance Win32_VideoController).Name -join '; '
+    if ($gpuNames -match 'NVIDIA') { $Backend = 'cuda' }
+    elseif ($gpuNames -match 'AMD|Radeon|Intel|Arc') { $Backend = 'directml' }
+    else { $Backend = 'cpu' }
+    Write-Host "Detected GPU(s): $gpuNames -> using '$Backend'"
 }
 
-function Get-InstalledNodeVersion {
-    $nodeCommand = Get-Command 'node.exe' -ErrorAction SilentlyContinue
-    if ($null -eq $nodeCommand) {
-        return $null
-    }
-
-    $rawVersion = (& $nodeCommand.Source --version).Trim().TrimStart('v')
+# ---------------------------------------------------------- python env
+$marker = Join-Path $Venv ".backend-$Backend"
+if (-not (Test-Path $marker)) {
+    Step "Installing the engine ($Backend). The first install downloads 1-3 GB; this can take a while."
+    Push-Location $Engine
     try {
-        return [version]$rawVersion
+        uv sync --extra $Backend --python 3.12 --no-progress
+        if ($LASTEXITCODE -ne 0) { throw 'uv sync failed' }
+        if ($Backend -eq 'cuda') {
+            Step 'Installing TensorRT (about 2 GB, one-off)'
+            uv pip install --python $Python @TensorRtPackages --no-progress
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning 'TensorRT could not be installed; the engine will use plain CUDA instead (about 35% slower).'
+            }
+        }
+        Get-ChildItem $Venv -Filter '.backend-*' -Force -ErrorAction SilentlyContinue | Remove-Item -Force
+        New-Item -ItemType File -Path $marker -Force | Out-Null
     }
-    catch {
-        throw "Node.js returned an unrecognized version: $rawVersion"
-    }
+    finally { Pop-Location }
 }
 
-function Test-SupportedNodeVersion {
-    param([AllowNull()][version]$Version)
-
-    if ($null -eq $Version) {
-        return $false
+# ------------------------------------------------------------------ UI
+$dist = Join-Path $Web 'dist\index.html'
+$newestSource = Get-ChildItem (Join-Path $Web 'src'), (Join-Path $Web 'index.html') -Recurse -File |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$stale = -not (Test-Path $dist) -or ($newestSource.LastWriteTime -gt (Get-Item $dist).LastWriteTime)
+if ($stale) {
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        Step 'Building the web UI'
+        Push-Location $Web
+        try {
+            npm ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+            npm run build
+            if ($LASTEXITCODE -ne 0) { throw 'UI build failed' }
+        }
+        finally { Pop-Location }
     }
-
-    return (($Version.Major -eq 20 -and $Version -ge $MinimumNode20) -or $Version -ge $MinimumNode22)
-}
-
-function Install-NodeLts {
-    $wingetCommand = Get-Command 'winget.exe' -ErrorAction SilentlyContinue
-    if ($null -eq $wingetCommand) {
-        throw @'
-Node.js is missing or too old, and Windows Package Manager (winget) is unavailable.
-Install the current Node.js LTS release from https://nodejs.org/, reopen PowerShell,
-and run this script again.
-'@
-    }
-
-    Write-Step 'Installing the current Node.js LTS release with winget'
-    $commonArguments = @(
-        '--id', 'OpenJS.NodeJS.LTS',
-        '--exact',
-        '--source', 'winget',
-        '--accept-package-agreements',
-        '--accept-source-agreements'
-    )
-
-    $existingVersion = Get-InstalledNodeVersion
-    if ($null -eq $existingVersion) {
-        & $wingetCommand.Source install @commonArguments
+    elseif (-not (Test-Path $dist)) {
+        throw 'The web UI is not built and Node.js is not installed. Install Node.js LTS (winget install OpenJS.NodeJS.LTS) and run this script again.'
     }
     else {
-        & $wingetCommand.Source upgrade @commonArguments
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host 'The package was not upgradeable; asking winget to install the LTS package.' -ForegroundColor Yellow
-            & $wingetCommand.Source install @commonArguments
-        }
-    }
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "winget could not install Node.js LTS (exit code $LASTEXITCODE)."
-    }
-
-    Update-ProcessPath
-}
-
-function Stop-ProcessTree {
-    param([Parameter(Mandatory = $true)][int]$ProcessId)
-
-    & "$env:SystemRoot\System32\taskkill.exe" /PID $ProcessId /T /F 2>$null | Out-Null
-}
-
-if ($env:OS -ne 'Windows_NT') {
-    throw 'This launcher is intended for Windows. On Linux or macOS, run npm install and npm run dev from web/.'
-}
-
-if (-not (Test-Path -LiteralPath (Join-Path $WebRoot 'package.json'))) {
-    throw "Cannot find web/package.json. Keep this script in the project root and run it from there."
-}
-
-Write-Host 'AIVision Traffic Counter — Windows setup' -ForegroundColor Green
-Write-Host "Project: $ProjectRoot"
-
-$nodeVersion = Get-InstalledNodeVersion
-if (-not (Test-SupportedNodeVersion -Version $nodeVersion)) {
-    if ($null -eq $nodeVersion) {
-        Write-Host 'Node.js is not installed.' -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "Node.js $nodeVersion is unsupported. Vite requires Node.js 20.19+ or 22.12+." -ForegroundColor Yellow
-    }
-
-    Install-NodeLts
-    $nodeVersion = Get-InstalledNodeVersion
-}
-
-if (-not (Test-SupportedNodeVersion -Version $nodeVersion)) {
-    throw @"
-A supported Node.js version is still unavailable after installation.
-Close this terminal, open a new PowerShell window, and rerun the script.
-Detected version: $nodeVersion
-"@
-}
-
-$npmCommand = Get-Command 'npm.cmd' -ErrorAction SilentlyContinue
-if ($null -eq $npmCommand) {
-    throw 'npm.cmd was not found even though Node.js is installed. Reinstall Node.js LTS and rerun the script.'
-}
-
-Write-Host "Node.js: $nodeVersion" -ForegroundColor Green
-Write-Host "npm: $((& $npmCommand.Source --version).Trim())" -ForegroundColor Green
-
-$requiredModelFiles = @(
-    'public\models\onnx-community\yolov10n\config.json',
-    'public\models\onnx-community\yolov10n\preprocessor_config.json',
-    'public\models\onnx-community\yolov10n\onnx\model.onnx',
-    'public\models\onnx-community\yolov10n\onnx\model_quantized.onnx'
-)
-
-$missingModelFiles = @(
-    foreach ($relativePath in $requiredModelFiles) {
-        if (-not (Test-Path -LiteralPath (Join-Path $WebRoot $relativePath))) {
-            $relativePath
-        }
-    }
-)
-
-if ($missingModelFiles.Count -gt 0) {
-    throw "Required local model files are missing:`n - $($missingModelFiles -join "`n - ")`nRestore the complete repository before launching the app."
-}
-
-if (-not $SkipInstall) {
-    Write-Step 'Installing exact web dependencies from package-lock.json'
-    Push-Location $WebRoot
-    try {
-        & $npmCommand.Source ci --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm ci failed with exit code $LASTEXITCODE."
-        }
-    }
-    finally {
-        Pop-Location
-    }
-}
-else {
-    if (-not (Test-Path -LiteralPath (Join-Path $WebRoot 'node_modules'))) {
-        throw '-SkipInstall was specified, but web/node_modules does not exist.'
-    }
-    Write-Host 'Dependency installation skipped.' -ForegroundColor Yellow
-}
-
-Write-Step "Launching the app at $AppUrl"
-$npmPath = $npmCommand.Source
-$serverCommand = "title AIVision Traffic Counter && `"$npmPath`" run dev -- --host 127.0.0.1 --port $Port --strictPort"
-$serverProcess = Start-Process `
-    -FilePath "$env:SystemRoot\System32\cmd.exe" `
-    -ArgumentList @('/K', $serverCommand) `
-    -WorkingDirectory $WebRoot `
-    -PassThru
-
-$deadline = [DateTime]::UtcNow.AddSeconds($LaunchTimeoutSeconds)
-$serverReady = $false
-while ([DateTime]::UtcNow -lt $deadline) {
-    Start-Sleep -Milliseconds 500
-    try {
-        $response = Invoke-WebRequest -Uri $AppUrl -UseBasicParsing -TimeoutSec 2
-        if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
-            $serverReady = $true
-            break
-        }
-    }
-    catch {
-        # Vite is still starting.
+        Write-Warning 'The UI sources changed but Node.js is missing, so the existing build is used.'
     }
 }
 
-if (-not $serverReady) {
-    Stop-ProcessTree -ProcessId $serverProcess.Id
-    throw "The development server did not become ready within $LaunchTimeoutSeconds seconds. Review the npm output above."
-}
+# --------------------------------------------------------------- model
+Step 'Checking the detection model'
+& $Cli download rfdetr-small
+if ($LASTEXITCODE -ne 0) { throw 'Model download failed' }
+& $Cli info
 
-if (-not $NoBrowser) {
-    Start-Process $AppUrl
-}
-
-Write-Host "`nAIVision Traffic Counter is running at $AppUrl" -ForegroundColor Green
-Write-Host 'The development server is in the new command window. Close that window or press Ctrl+C there to stop it.'
+# ---------------------------------------------------------------- run
+Step "Starting AIVision on http://localhost:$Port  (Ctrl+C to stop)"
+Write-Host 'The first analysis on an NVIDIA GPU builds a TensorRT engine (1-3 minutes, once per model).'
+$serveArgs = @('serve', '--port', $Port)
+if (-not $NoBrowser) { $serveArgs += '--open' }
+& $Cli @serveArgs

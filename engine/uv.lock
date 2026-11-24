@@ -48,7 +48,7 @@ requires-dist = [
     { name = "nvidia-cublas", marker = "sys_platform == 'win32' and extra == 'cuda'", specifier = "==13.10.0.20" },
     { name = "onnxruntime", marker = "extra == 'cpu'", specifier = ">=1.20" },
     { name = "onnxruntime-directml", marker = "extra == 'directml'", specifier = ">=1.20" },
-    { name = "onnxruntime-gpu", extras = ["cuda", "cudnn"], marker = "extra == 'cuda'", specifier = ">=1.22" },
+    { name = "onnxruntime-gpu", extras = ["cuda", "cudnn"], marker = "extra == 'cuda'", specifier = "==1.32.0" },
     { name = "opencv-python-headless", specifier = ">=4.10" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "python-multipart", specifier = ">=0.0.9" },

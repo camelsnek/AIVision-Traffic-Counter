@@ -1,6 +1,6 @@
 """RF-DETR vehicle detector on ONNX Runtime.
 
-Provider selection, best first: TensorRT (FP16, cached engine) → CUDA →
+Provider selection, best first: TensorRT (FP32, cached engine) → CUDA →
 DirectML → CPU. "auto" walks that list and keeps the first one that
 actually initialises and runs a warm-up inference.
 """
@@ -76,9 +76,13 @@ def _add_tensorrt_dll_dir() -> None:
 
 
 def _provider_candidates(preference: DevicePreference, available: list[str]) -> list[tuple[str, dict]]:
-    cache_dir = models_dir() / "trt-cache"
+    # FP16 is opt-in: on RF-DETR it overflows in LayerNorm and drops roughly half
+    # the detections (measured on RTX 3070 Ti). FP32 TensorRT matches CUDA exactly
+    # and is still ~35% faster than CUDA.
+    fp16 = os.environ.get("AIVISION_TRT_FP16") == "1"
+    cache_dir = models_dir() / "trt-cache" / ("fp16" if fp16 else "fp32")
     trt_options = {
-        "trt_fp16_enable": True,
+        "trt_fp16_enable": fp16,
         "trt_engine_cache_enable": True,
         "trt_engine_cache_path": str(cache_dir),
         "trt_timing_cache_enable": True,
@@ -138,7 +142,7 @@ class VehicleDetector:
         outputs = [o.name for o in self.session.get_outputs()]
         self._boxes_name = "pred_boxes" if "pred_boxes" in outputs else outputs[0]
         self._logits_name = "logits" if "logits" in outputs else outputs[1]
-        precision = "fp16" if name == "TensorrtExecutionProvider" else "fp32"
+        precision = "fp16" if name == "TensorrtExecutionProvider" and os.environ.get("AIVISION_TRT_FP16") == "1" else "fp32"
         self.info = EngineInfo(
             model_id=self.profile.id,
             provider=_PROVIDER_LABELS.get(self.provider, self.provider),
