@@ -1,0 +1,7 @@
+{
+  "venvPath": "engine",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "include": ["engine"],
+  "executionEnvironments": [{ "root": "engine" }]
+}

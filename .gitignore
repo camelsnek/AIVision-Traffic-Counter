@@ -20,3 +20,14 @@ pubspec.lock
 # React web
 web/node_modules/
 web/dist/
+
+# Python engine
+engine/.venv/
+__pycache__/
+*.pyc
+engine/models/*.onnx
+engine/models/*.part
+engine/models/trt-cache/
+engine/data/
+benchmarks/clips/
+benchmarks/results/

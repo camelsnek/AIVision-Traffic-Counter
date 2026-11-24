@@ -1,0 +1,52 @@
+[project]
+name = "aivision"
+version = "0.2.0"
+description = "Local GPU-accelerated vehicle detection, tracking, and line-crossing counting."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "av>=15",
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "scipy>=1.13",
+    "pydantic>=2.9",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+# NVIDIA GPUs: CUDA + cuDNN runtime libraries come from pip, no CUDA toolkit install needed.
+# nvidia-cublas is pinned because newer builds ship no Windows wheel.
+cuda = [
+    "onnxruntime-gpu[cuda,cudnn]>=1.22",
+    "nvidia-cublas==13.10.0.20; sys_platform == 'win32'",
+]
+# Any DirectX 12 GPU on Windows (AMD, Intel, NVIDIA).
+directml = ["onnxruntime-directml>=1.20"]
+# CPU only (and the fallback for development machines).
+cpu = ["onnxruntime>=1.20"]
+
+[project.scripts]
+aivision = "aivision.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.uv]
+conflicts = [[{ extra = "cuda" }, { extra = "directml" }, { extra = "cpu" }]]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["aivision"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
