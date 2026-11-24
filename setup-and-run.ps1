@@ -43,6 +43,23 @@ $TensorRtPackages = @('tensorrt-cu13-libs==10.16.1.11', 'tensorrt-cu13-bindings=
 
 function Step($text) { Write-Host "`n==> $text" -ForegroundColor Yellow }
 
+# Windows PowerShell 5.1 turns any stderr line of a native program into a
+# terminating error when $ErrorActionPreference is 'Stop'. uv, npm and git
+# write progress to stderr, so native calls go through this helper, which
+# relaxes the preference for the call and checks the real exit code instead.
+function Invoke-Native {
+    param([Parameter(Mandatory)][string]$What, [Parameter(Mandatory)][scriptblock]$Command, [switch]$AllowFailure)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command 2>&1 | ForEach-Object { "$_" } | Write-Host
+        $code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previous }
+    if ($code -ne 0 -and -not $AllowFailure) { throw "$What failed (exit code $code)." }
+    return ($code -eq 0)
+}
+
 # ------------------------------------------------------------------ uv
 $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
@@ -66,12 +83,11 @@ if (-not (Test-Path $marker)) {
     Step "Installing the engine ($Backend). The first install downloads 1-3 GB; this can take a while."
     Push-Location $Engine
     try {
-        uv sync --extra $Backend --python 3.12 --no-progress
-        if ($LASTEXITCODE -ne 0) { throw 'uv sync failed' }
+        Invoke-Native 'Engine install' { uv sync --extra $Backend --python 3.12 --no-progress } | Out-Null
         if ($Backend -eq 'cuda') {
             Step 'Installing TensorRT (about 2 GB, one-off)'
-            uv pip install --python $Python @TensorRtPackages --no-progress
-            if ($LASTEXITCODE -ne 0) {
+            $ok = Invoke-Native 'TensorRT install' { uv pip install --python $Python @TensorRtPackages --no-progress } -AllowFailure
+            if (-not $ok) {
                 Write-Warning 'TensorRT could not be installed; the engine will use plain CUDA instead (about 35% slower).'
             }
         }
@@ -91,10 +107,8 @@ if ($stale) {
         Step 'Building the web UI'
         Push-Location $Web
         try {
-            npm ci --no-audit --no-fund
-            if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
-            npm run build
-            if ($LASTEXITCODE -ne 0) { throw 'UI build failed' }
+            Invoke-Native 'npm ci' { npm ci --no-audit --no-fund } | Out-Null
+            Invoke-Native 'UI build' { npm run build } | Out-Null
         }
         finally { Pop-Location }
     }
@@ -108,13 +122,13 @@ if ($stale) {
 
 # --------------------------------------------------------------- model
 Step 'Checking the detection model'
-& $Cli download rfdetr-small
-if ($LASTEXITCODE -ne 0) { throw 'Model download failed' }
-& $Cli info
+Invoke-Native 'Model download' { & $Cli download rfdetr-small } | Out-Null
+Invoke-Native 'Engine check' { & $Cli info } | Out-Null
 
 # ---------------------------------------------------------------- run
 Step "Starting AIVision on http://localhost:$Port  (Ctrl+C to stop)"
 Write-Host 'The first analysis on an NVIDIA GPU builds a TensorRT engine (1-3 minutes, once per model).'
 $serveArgs = @('serve', '--port', $Port)
 if (-not $NoBrowser) { $serveArgs += '--open' }
+$ErrorActionPreference = 'Continue'
 & $Cli @serveArgs
