@@ -28,10 +28,10 @@ export function ZonesPanel({
 }: ZonesPanelProps) {
   const activeZone = zones.find((zone) => zone.zoneId === activeZoneId) ?? null
   return (
-    <section className="card" aria-label="Counting zones">
-      <header className="card-head">
-        <h2 className="card-title">Zones</h2>
-        <span className="card-meta">
+    <section className="panel" aria-label="Counting zones">
+      <header className="panel-head">
+        <h2>Zones</h2>
+        <span className="panel-meta">
           {zones.length} {zones.length === 1 ? 'zone' : 'zones'}
         </span>
       </header>

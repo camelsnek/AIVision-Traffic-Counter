@@ -7,10 +7,8 @@ export type Direction = 'down' | 'up' | 'right' | 'left'
 
 export type LineOrientation = 'horizontal' | 'vertical'
 
-export type ModelProfileId = 'onnx-community/yolov10n' | 'onnx-community/yolov10m'
-
-/** User-selected inference hardware. Auto prefers WebGPU and falls back to CPU/WASM. */
-export type EnginePreference = 'auto' | 'gpu' | 'cpu'
+/** Inference hardware preference: auto = TensorRT/CUDA/DirectML if present, else CPU. */
+export type DevicePreference = 'auto' | 'gpu' | 'cpu'
 
 /** Versioned detector-input transform; profile ids are persisted in session exports. */
 export type PreprocessingProfileId = 'standard-v1' | 'night-clahe-v1'
@@ -81,24 +79,29 @@ export interface CountEvent {
   videoTime: number
 }
 
+/** Mirrors `AnalysisConfig` in engine/aivision/schema.py (camelCase JSON). */
 export interface AnalysisConfig {
-  modelProfileId: ModelProfileId
-  enginePreference: EnginePreference
-  /** Pixel transform applied after the video crop is resized and before model preprocessing. */
+  /** Detector model id, e.g. `rfdetr-small` (see GET /api/info). */
+  modelId: string
+  device: DevicePreference
+  /** Recorded in exports; the Python engine currently applies no pixel transform. */
   preprocessingProfileId: PreprocessingProfileId
-  /** Minimum detection confidence, 0..1. */
+  /** Minimum detection confidence for starting a track, 0..1. */
   confidence: number
-  /** Analysis sampling rate in video-time frames per second. */
+  /** Analysed frames per second of video time; 0 analyses every frame. */
   samplingFps: number
   zones: CountingZone[]
 }
 
-export type EngineDevice = 'webgpu' | 'wasm'
-
+/** What the backend actually used for a run. */
 export interface EngineInfo {
-  modelProfileId: ModelProfileId
-  device: EngineDevice
-  dtype: 'fp32' | 'q8'
+  modelId: string
+  /** TensorRT, CUDA, DirectML or CPU. */
+  provider: string
+  precision: string
+  inputSize: number
+  /** Providers that failed before this one was chosen, if any. */
+  fallbacks?: string
 }
 
 export interface DirectionCounts {

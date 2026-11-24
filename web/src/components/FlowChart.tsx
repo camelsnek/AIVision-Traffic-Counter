@@ -52,11 +52,11 @@ export const FlowChart = memo(function FlowChart({ events, durationSeconds }: Fl
   const bucketLabel = bucketSeconds >= 60 ? formatDuration(bucketSeconds) : `${bucketSeconds}s`
 
   return (
-    <section className="card" aria-label="Traffic flow over time">
-      <header className="card-head">
-        <h2 className="card-title">Traffic flow</h2>
+    <section className="panel" aria-label="Traffic flow over time">
+      <header className="panel-head">
+        <h2>Traffic flow</h2>
         {hasData && (
-          <span className="card-meta">
+          <span className="panel-meta">
             {bucketLabel} buckets · directional peak {maxCount}
           </span>
         )}

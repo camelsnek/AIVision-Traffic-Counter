@@ -2,10 +2,11 @@ import './App.css'
 
 import { ActionBar } from './components/ActionBar'
 import { ConfigPanel } from './components/ConfigPanel'
+import { CountBoard } from './components/CountBoard'
 import { ExportPanel } from './components/ExportPanel'
 import { FlowChart } from './components/FlowChart'
-import { SessionPanel } from './components/SessionPanel'
-import { TopBar } from './components/TopBar'
+import { AppHeader } from './components/AppHeader'
+import { VideoLibrary } from './components/VideoLibrary'
 import { VideoStage } from './components/VideoStage'
 import { ZoneEditor } from './components/ZoneEditor'
 import { ZonesPanel } from './components/ZonesPanel'
@@ -13,29 +14,25 @@ import { useTrafficAnalysis } from './hooks/useTrafficAnalysis'
 
 export default function App() {
   const analysis = useTrafficAnalysis()
-  const busy =
-    analysis.status === 'running' || analysis.status === 'paused' || analysis.status === 'loading'
 
   return (
     <div className="app">
-      <TopBar
+      <AppHeader
+        connected={analysis.connected}
         status={analysis.status}
         engine={analysis.engine}
-        preprocessingProfileId={analysis.config.preprocessingProfileId}
-        progress={analysis.progress}
+        models={analysis.models}
       />
       <main className="workspace">
-        <section className="stage-column" aria-label="Video stage">
+        <section className="stage-column" aria-label="Video">
           <VideoStage
-            videoRef={analysis.videoRef}
             frameRef={analysis.frameRef}
             overlayRef={analysis.overlayRef}
-            videoUrl={analysis.videoUrl}
-            fileName={analysis.fileName}
+            video={analysis.video}
             videoSize={analysis.videoSize}
-            frameVisible={analysis.frameVisible}
             status={analysis.status}
             progress={analysis.progress}
+            uploadProgress={analysis.uploadProgress}
             loadFile={analysis.loadFile}
           >
             <ZoneEditor
@@ -47,33 +44,33 @@ export default function App() {
               updateZoneLine={analysis.updateZoneLine}
             />
           </VideoStage>
+          <VideoLibrary
+            videos={analysis.videos}
+            selectedId={analysis.video?.id ?? null}
+            disabled={analysis.busy || analysis.status === 'uploading'}
+            selectVideo={analysis.selectVideo}
+            deleteVideo={analysis.deleteVideo}
+            loadFile={analysis.loadFile}
+          />
         </section>
-        <aside className="sidebar">
+        <aside className="rail" aria-label="Analysis">
           {analysis.error !== null && (
-            <div className="error-banner" role="alert">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <path
-                  d="M7 1.2 13.2 12H.8L7 1.2Z"
-                  stroke="currentColor"
-                  strokeWidth="1.3"
-                  strokeLinejoin="round"
-                />
-                <path d="M7 5.4v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-                <circle cx="7" cy="10.4" r="0.7" fill="currentColor" />
-              </svg>
-              <span>{analysis.error}</span>
+            <div className="alert" role="alert">
+              {analysis.error}
             </div>
           )}
           <ActionBar
             status={analysis.status}
             canStart={analysis.canStart}
+            hasVideo={analysis.video !== null}
+            connected={analysis.connected}
             start={analysis.start}
             pause={analysis.pause}
             resume={analysis.resume}
             stop={analysis.stop}
             reset={analysis.reset}
           />
-          <SessionPanel counts={analysis.counts} />
+          <CountBoard counts={analysis.counts} status={analysis.status} />
           <ZonesPanel
             zones={analysis.counts.zones}
             zoneEditing={analysis.zoneEditing}
@@ -83,32 +80,24 @@ export default function App() {
             addZone={analysis.addZone}
             removeZone={analysis.removeZone}
             updateZoneOrientation={analysis.updateZoneOrientation}
-            busy={busy}
-            hasVideo={analysis.videoUrl !== null}
+            busy={analysis.busy}
+            hasVideo={analysis.video !== null}
           />
           <FlowChart events={analysis.events} durationSeconds={analysis.progress.durationSeconds} />
           <ConfigPanel
             config={analysis.config}
-            disabled={busy}
+            models={analysis.models}
             gpuAvailable={analysis.gpuAvailable}
-            setModelProfile={analysis.setModelProfile}
-            setEnginePreference={analysis.setEnginePreference}
-            setPreprocessingProfile={analysis.setPreprocessingProfile}
+            providers={analysis.providers}
+            disabled={analysis.busy}
+            setModel={analysis.setModel}
+            setDevice={analysis.setDevice}
             setConfidence={analysis.setConfidence}
             setSamplingFps={analysis.setSamplingFps}
           />
-          <ExportPanel
-            eventCount={analysis.events.length}
-            exportEventsCsv={analysis.exportEventsCsv}
-            exportSummaryCsv={analysis.exportSummaryCsv}
-            exportJson={analysis.exportJson}
-          />
+          <ExportPanel eventCount={analysis.events.length} exportUrl={analysis.exportUrl} />
         </aside>
       </main>
-      <footer className="footnote">
-        Counting rule: one count per vehicle per zone, on counting-line crossing. Direction
-        ↓/↑/←/→ follows screen motion.
-      </footer>
     </div>
   )
 }

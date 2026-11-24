@@ -1,34 +1,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { api, connectLive, type ModelInfo, type RunPerformance, type ServerMessage, type StageTimings, type VideoMeta } from '../lib/api'
 import { drawOverlay } from '../lib/drawOverlay'
-import { buildSessionExport, downloadTextFile, eventsToCsv, summaryToCsv } from '../lib/exporters'
 import { clampRect } from '../lib/geometry'
 import { summarizeEvents } from '../lib/stats'
-import { VehicleDetector } from '../services/vehicleDetector'
-import { VideoProcessor, type FrameTimings } from '../services/videoProcessor'
 import type {
   AnalysisConfig,
   CountEvent,
   CountingZone,
+  DevicePreference,
   EngineInfo,
-  EnginePreference,
   LineOrientation,
-  ModelProfileId,
-  PreprocessingProfileId,
   RectNorm,
   SessionCounts,
   TrackSnapshot,
 } from '../types'
 
-export type AnalysisStatus = 'idle' | 'ready' | 'loading' | 'running' | 'paused' | 'stopped' | 'complete' | 'error'
+export type AnalysisStatus =
+  | 'idle'
+  | 'uploading'
+  | 'ready'
+  | 'loading'
+  | 'running'
+  | 'paused'
+  | 'stopped'
+  | 'complete'
+  | 'error'
 
 export interface AnalysisProgress {
   /** 0..1 share of the video processed. */
   progress: number
   videoTime: number
   durationSeconds: number
-  timings: FrameTimings
+  timings: Partial<StageTimings>
   throughputFps: number
+  frames: number
+  performance: RunPerformance | null
 }
 
 export interface VideoSize {
@@ -36,475 +43,363 @@ export interface VideoSize {
   height: number
 }
 
-export interface TrafficAnalysis {
-  videoRef: React.RefObject<HTMLVideoElement | null>
-  frameRef: React.RefObject<HTMLCanvasElement | null>
-  overlayRef: React.RefObject<HTMLCanvasElement | null>
-
-  videoUrl: string | null
-  fileName: string | null
-  videoSize: VideoSize | null
-  frameVisible: boolean
-  loadFile(file: File): void
-
-  status: AnalysisStatus
-  error: string | null
-  engine: EngineInfo | null
-  gpuAvailable: boolean | null
-
-  config: AnalysisConfig
-  setModelProfile(modelProfileId: ModelProfileId): void
-  setEnginePreference(preference: EnginePreference): void
-  setPreprocessingProfile(preprocessingProfileId: PreprocessingProfileId): void
-  setConfidence(confidence: number): void
-  setSamplingFps(samplingFps: number): void
-
-  zoneEditing: boolean
-  setZoneEditing(editing: boolean): void
-  activeZoneId: string | null
-  setActiveZone(zoneId: string): void
-  addZone(): void
-  removeZone(zoneId: string): void
-  updateZoneRegion(zoneId: string, region: RectNorm): void
-  updateZoneLine(zoneId: string, lineOffset: number): void
-  updateZoneOrientation(zoneId: string, lineOrientation: LineOrientation): void
-
-  start(): Promise<void>
-  pause(): void
-  resume(): void
-  stop(): void
-  reset(): void
-  canStart: boolean
-
-  progress: AnalysisProgress
-  counts: SessionCounts
-  events: CountEvent[]
-
-  exportEventsCsv(): void
-  exportSummaryCsv(): void
-  exportJson(): void
-}
-
 const INITIAL_PROGRESS: AnalysisProgress = {
   progress: 0,
   videoTime: 0,
   durationSeconds: 0,
-  timings: {
-    seekMs: 0,
-    frameCaptureMs: 0,
-    detector: {
-      captureMs: 0,
-      preprocessingMs: 0,
-      tensorMs: 0,
-      inferenceMs: 0,
-      postprocessMs: 0,
-      totalMs: 0,
-    },
-    counterMs: 0,
-    displayMs: 0,
-    frameIntervalMs: 0,
-  },
+  timings: {},
   throughputFps: 0,
+  frames: 0,
+  performance: null,
 }
 
-const MAX_OVERLAY_EDGE = 1600
-
-const DEFAULT_CONFIG: AnalysisConfig = {
-  modelProfileId: 'onnx-community/yolov10n',
-  enginePreference: 'auto',
+const DEFAULT_CONFIG: Omit<AnalysisConfig, 'zones'> = {
+  modelId: 'rfdetr-small',
+  device: 'auto',
   preprocessingProfileId: 'standard-v1',
-  confidence: 0.35,
-  samplingFps: 10,
-  zones: [],
+  confidence: 0.4,
+  samplingFps: 0,
 }
 
-export function useTrafficAnalysis(): TrafficAnalysis {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const frameRef = useRef<HTMLCanvasElement>(null)
+const CONFIG_STORAGE_KEY = 'aivision.config.v2'
+
+function loadStoredConfig(): AnalysisConfig {
+  try {
+    const raw = localStorage.getItem(CONFIG_STORAGE_KEY)
+    if (raw) {
+      const stored = JSON.parse(raw) as Partial<AnalysisConfig>
+      if (Array.isArray(stored.zones) && stored.zones.length > 0) {
+        return { ...DEFAULT_CONFIG, ...stored, zones: stored.zones }
+      }
+    }
+  } catch {
+    // ignore corrupt storage
+  }
+  return { ...DEFAULT_CONFIG, zones: [createZone(1)] }
+}
+
+export function useTrafficAnalysis() {
+  const frameRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
-  const objectUrlRef = useRef<string | null>(null)
-  const processorRef = useRef<VideoProcessor | null>(null)
-  const detectorRef = useRef<{ key: string; detector: VehicleDetector } | null>(null)
   const tracksRef = useRef<TrackSnapshot[]>([])
-  const eventsRef = useRef<CountEvent[]>([])
-  const liveCountsRef = useRef<SessionCounts | null>(null)
+  const frameUrlRef = useRef<string | null>(null)
+  const pendingFrameRef = useRef<{ runId: string; tracks: TrackSnapshot[] } | null>(null)
+  const runIdRef = useRef<string | null>(null)
   const nextZoneNumberRef = useRef(2)
 
-  const [videoUrl, setVideoUrl] = useState<string | null>(null)
-  const [fileName, setFileName] = useState<string | null>(null)
-  const [videoSize, setVideoSize] = useState<VideoSize | null>(null)
-  const [frameVisible, setFrameVisible] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [models, setModels] = useState<ModelInfo[]>([])
+  const [gpuAvailable, setGpuAvailable] = useState<boolean | null>(null)
+  const [providers, setProviders] = useState<string[]>([])
+  const [videos, setVideos] = useState<VideoMeta[]>([])
+  const [video, setVideo] = useState<VideoMeta | null>(null)
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
+  const [liveFrame, setLiveFrame] = useState(false)
   const [status, setStatus] = useState<AnalysisStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [engine, setEngine] = useState<EngineInfo | null>(null)
-  const [gpuAvailable, setGpuAvailable] = useState<boolean | null>(null)
-  const [config, setConfig] = useState<AnalysisConfig>(() => ({
-    ...DEFAULT_CONFIG,
-    zones: [createZone(1)],
-  }))
+  const [config, setConfig] = useState<AnalysisConfig>(loadStoredConfig)
   const [zoneEditing, setZoneEditing] = useState(false)
   const [activeZoneId, setActiveZoneId] = useState<string | null>(config.zones[0]?.id ?? null)
   const [progress, setProgress] = useState<AnalysisProgress>(INITIAL_PROGRESS)
   const [events, setEvents] = useState<CountEvent[]>([])
+  /** Zones of the run being displayed (frozen at start), for live counts/overlay. */
+  const [runZones, setRunZones] = useState<CountingZone[] | null>(null)
 
-  const counts = useMemo(() => summarizeEvents(events, config.zones), [events, config.zones])
-  const isBusy = status === 'running' || status === 'paused' || status === 'loading'
+  const busy = status === 'running' || status === 'paused' || status === 'loading'
+  const displayZones = busy && runZones ? runZones : config.zones
+  const counts = useMemo<SessionCounts>(() => summarizeEvents(events, displayZones), [events, displayZones])
 
-  const redrawOverlay = useCallback(
-    (tracks: readonly TrackSnapshot[], liveCounts: SessionCounts | null, editing: boolean) => {
+  useEffect(() => {
+    try {
+      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config))
+    } catch {
+      // storage full or disabled
+    }
+  }, [config])
+
+  // Static info + video library.
+  useEffect(() => {
+    void api
+      .info()
+      .then((info) => {
+        setModels(info.models)
+        setGpuAvailable(info.gpu)
+        setProviders(info.providers)
+      })
+      .catch((infoError: unknown) => setError(errorMessage(infoError)))
+    void api.videos().then(setVideos).catch(() => undefined)
+  }, [])
+
+  const redraw = useCallback(
+    (tracks: readonly TrackSnapshot[]) => {
       const overlay = overlayRef.current
       if (!overlay) {
         return
       }
       drawOverlay(overlay, {
         tracks,
-        zones: config.zones,
-        counts: liveCounts,
+        zones: displayZones,
+        counts,
         activeZoneId,
-        editing,
+        editing: zoneEditing,
       })
     },
-    [config.zones, activeZoneId],
+    [displayZones, counts, activeZoneId, zoneEditing],
   )
-
-  // Keep the overlay in sync while idle (zone editing, config tweaks, resize).
+  const redrawRef = useRef(redraw)
   useEffect(() => {
-    if (status !== 'running') {
-      redrawOverlay(tracksRef.current, counts, zoneEditing)
-    }
-  }, [redrawOverlay, counts, zoneEditing, status, videoSize])
+    redrawRef.current = redraw
+    redraw(tracksRef.current)
+  }, [redraw])
 
+  // Size the overlay canvas to the video's aspect ratio.
   useEffect(() => {
-    let active = true
-    void VehicleDetector.supportsWebGpu().then((available) => {
-      if (active) {
-        setGpuAvailable(available)
-      }
-    })
-    return () => {
-      active = false
-    }
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      processorRef.current?.stop()
-      void detectorRef.current?.detector.dispose()
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current)
-      }
-    }
-  }, [])
-
-  // Wire up video metadata: canvas sizing and the Infinity-duration fix
-  // (MediaRecorder webm files report Infinity until forced to buffer).
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video || !videoUrl) {
+    const overlay = overlayRef.current
+    if (!overlay || !video) {
       return
     }
+    const scale = Math.min(1, 1600 / Math.max(video.width, video.height))
+    overlay.width = Math.max(1, Math.round(video.width * scale))
+    overlay.height = Math.max(1, Math.round(video.height * scale))
+    redrawRef.current(tracksRef.current)
+  }, [video])
 
-    const handleMetadata = () => {
-      if (!Number.isFinite(video.duration)) {
-        const restore = () => {
-          video.currentTime = 0
-          video.removeEventListener('durationchange', restore)
-          applySize()
+  // Live channel.
+  useEffect(() => {
+    const handleMessage = (message: ServerMessage) => {
+      switch (message.type) {
+        case 'hello':
+          break
+        case 'run': {
+          const isNew = runIdRef.current !== message.runId
+          runIdRef.current = message.runId
+          setVideo(message.video)
+          setRunZones(message.config.zones)
+          if (isNew) {
+            setEvents([])
+            tracksRef.current = []
+          }
+          break
         }
-        video.addEventListener('durationchange', restore)
-        video.currentTime = Number.MAX_SAFE_INTEGER
+        case 'status': {
+          if (message.runId !== runIdRef.current) {
+            break
+          }
+          setStatus(message.status)
+          setError(message.error)
+          setEngine(message.engine)
+          setProgress({
+            progress: message.progress,
+            videoTime: message.videoTime,
+            durationSeconds: message.durationSeconds,
+            timings: message.timings,
+            throughputFps: message.throughputFps,
+            frames: message.frames,
+            performance: message.performance,
+          })
+          if (message.events.length > 0) {
+            setEvents((current) => [...current.slice(0, message.eventsFrom), ...message.events])
+          }
+          break
+        }
+        case 'frame':
+          pendingFrameRef.current = { runId: message.runId, tracks: message.tracks }
+          break
+      }
+    }
+
+    const handleImage = (jpeg: Blob) => {
+      const pending = pendingFrameRef.current
+      pendingFrameRef.current = null
+      if (!pending || pending.runId !== runIdRef.current) {
         return
       }
-      applySize()
-    }
-
-    const applySize = () => {
-      const overlay = overlayRef.current
-      const frame = frameRef.current
-      if (video.videoWidth && video.videoHeight) {
-        const scale = Math.min(1, MAX_OVERLAY_EDGE / Math.max(video.videoWidth, video.videoHeight))
-        const width = Math.max(1, Math.round(video.videoWidth * scale))
-        const height = Math.max(1, Math.round(video.videoHeight * scale))
-        if (overlay) {
-          overlay.width = width
-          overlay.height = height
+      const url = URL.createObjectURL(jpeg)
+      const image = frameRef.current
+      const previous = frameUrlRef.current
+      frameUrlRef.current = url
+      if (image) {
+        // Paint overlay only when the matching frame is decoded, so boxes and pixels stay in sync.
+        image.onload = () => {
+          tracksRef.current = pending.tracks
+          redrawRef.current(pending.tracks)
+          if (previous) {
+            URL.revokeObjectURL(previous)
+          }
         }
-        if (frame) {
-          frame.width = width
-          frame.height = height
-        }
+        image.src = url
       }
-      setVideoSize(video.videoWidth ? { width: video.videoWidth, height: video.videoHeight } : null)
+      setLiveFrame(true)
     }
 
-    video.addEventListener('loadedmetadata', handleMetadata)
-    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      handleMetadata()
-    }
-    return () => video.removeEventListener('loadedmetadata', handleMetadata)
-  }, [videoUrl])
-
-  const clearSession = useCallback(() => {
-    tracksRef.current = []
-    eventsRef.current = []
-    liveCountsRef.current = null
-    setFrameVisible(false)
-    setEvents([])
-    setProgress(INITIAL_PROGRESS)
-    setError(null)
+    return connectLive(handleMessage, handleImage, setConnected)
   }, [])
 
+  const selectVideo = useCallback((meta: VideoMeta) => {
+    if (busy) {
+      return
+    }
+    runIdRef.current = null
+    tracksRef.current = []
+    setVideo(meta)
+    setLiveFrame(false)
+    setEvents([])
+    setRunZones(null)
+    setProgress({ ...INITIAL_PROGRESS, durationSeconds: meta.durationSeconds })
+    setStatus('ready')
+    setError(null)
+    const image = frameRef.current
+    if (image) {
+      image.onload = null
+      image.src = api.posterUrl(meta.id)
+    }
+  }, [busy])
+
   const loadFile = useCallback(
-    (file: File) => {
-      processorRef.current?.stop()
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current)
+    async (file: File) => {
+      if (busy) {
+        return
       }
-      const url = URL.createObjectURL(file)
-      objectUrlRef.current = url
-      setVideoUrl(url)
-      setFileName(file.name)
-      setVideoSize(null)
-      setStatus('ready')
-      clearSession()
+      setStatus('uploading')
+      setError(null)
+      setUploadProgress(0)
+      try {
+        const meta = await api.uploadVideo(file, setUploadProgress)
+        setVideos((current) => [meta, ...current.filter((item) => item.id !== meta.id)])
+        selectVideo(meta)
+      } catch (uploadError) {
+        setError(errorMessage(uploadError))
+        setStatus(video ? 'ready' : 'idle')
+      } finally {
+        setUploadProgress(null)
+      }
     },
-    [clearSession],
+    [busy, selectVideo, video],
+  )
+
+  const deleteVideo = useCallback(
+    async (id: string) => {
+      try {
+        await api.deleteVideo(id)
+        setVideos((current) => current.filter((item) => item.id !== id))
+        if (video?.id === id) {
+          setVideo(null)
+          setStatus('idle')
+          setLiveFrame(false)
+        }
+      } catch (deleteError) {
+        setError(errorMessage(deleteError))
+      }
+    },
+    [video],
   )
 
   const start = useCallback(async () => {
-    const video = videoRef.current
-    const frame = frameRef.current
-    if (!video || !frame || !videoUrl || config.zones.length === 0 || isBusy) {
+    if (!video || busy || config.zones.length === 0) {
       return
     }
-
-    clearSession()
     setZoneEditing(false)
-    liveCountsRef.current = summarizeEvents([], config.zones)
+    setError(null)
+    setEvents([])
+    tracksRef.current = []
+    setProgress({ ...INITIAL_PROGRESS, durationSeconds: video.durationSeconds })
     setStatus('loading')
-
-    const detectorKey = `${config.modelProfileId}:${config.enginePreference}`
-    const currentDetector = detectorRef.current
-    let detector = currentDetector?.key === detectorKey ? currentDetector.detector : null
-    if (!detector) {
-      try {
-        if (currentDetector) {
-          await currentDetector.detector.dispose()
-          detectorRef.current = null
-        }
-        detector = await VehicleDetector.create(config.modelProfileId, config.enginePreference)
-        detectorRef.current = { key: detectorKey, detector }
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : 'The detection model could not be loaded.')
-        setStatus('error')
-        return
-      }
+    try {
+      const { runId } = await api.startRun(video.id, config)
+      runIdRef.current = runId
+      setRunZones(config.zones)
+    } catch (startError) {
+      setError(errorMessage(startError))
+      setStatus('error')
     }
-    setEngine(detector.info)
+  }, [video, busy, config])
 
-    const processor = new VideoProcessor(video, frame, detector, config, {
-      onFrame: (update) => {
-        tracksRef.current = update.tracks
-        if (update.newEvents.length > 0) {
-          eventsRef.current.push(...update.newEvents)
-          setEvents([...eventsRef.current])
-          liveCountsRef.current = summarizeEvents(eventsRef.current, config.zones)
-        }
-        setProgress({
-          progress: update.progress,
-          videoTime: update.videoTime,
-          durationSeconds: update.durationSeconds,
-          timings: update.timings,
-          throughputFps: update.throughputFps,
-        })
-        if (update.presented) {
-          setFrameVisible(true)
-          const overlay = overlayRef.current
-          if (overlay) {
-            drawOverlay(overlay, {
-              tracks: update.tracks,
-              zones: config.zones,
-              counts: liveCountsRef.current,
-              activeZoneId: null,
-              editing: false,
-            })
-          }
-        }
-      },
-      onDone: (reason) => {
-        processorRef.current = null
-        setStatus(reason === 'complete' ? 'complete' : 'stopped')
-        if (reason === 'complete') {
-          setProgress((current) => ({ ...current, progress: 1 }))
-        }
-      },
-      onError: (processError) => {
-        processorRef.current = null
-        setError(processError.message)
-        setStatus('error')
-      },
-    })
-
-    processorRef.current = processor
-    setStatus('running')
-    await processor.run()
-  }, [videoUrl, config, isBusy, clearSession])
-
-  const pause = useCallback(() => {
-    if (status === 'running' && processorRef.current?.pause()) {
-      setStatus('paused')
+  const control = useCallback(async (action: 'pause' | 'resume' | 'stop') => {
+    try {
+      const result = await api.control(action)
+      setStatus(result.status)
+    } catch (controlError) {
+      setError(errorMessage(controlError))
     }
-  }, [status])
-
-  const resume = useCallback(() => {
-    if (status === 'paused' && processorRef.current?.resume()) {
-      setStatus('running')
-    }
-  }, [status])
-
-  const stop = useCallback(() => {
-    processorRef.current?.stop()
   }, [])
 
   const reset = useCallback(() => {
-    processorRef.current?.stop()
-    clearSession()
-    const video = videoRef.current
-    if (video) {
-      video.currentTime = 0
+    if (busy) {
+      return
     }
-    setStatus(videoUrl ? 'ready' : 'idle')
-  }, [clearSession, videoUrl])
+    if (video) {
+      selectVideo(video)
+    }
+  }, [busy, video, selectVideo])
 
-  const setModelProfile = useCallback((modelProfileId: ModelProfileId) => {
-    setEngine(null)
-    setConfig((current) => ({ ...current, modelProfileId }))
+  const updateZones = useCallback((update: (zones: CountingZone[]) => CountingZone[]) => {
+    setConfig((current) => ({ ...current, zones: update(current.zones) }))
   }, [])
-
-  const setEnginePreference = useCallback((enginePreference: EnginePreference) => {
-    setEngine(null)
-    setConfig((current) => ({ ...current, enginePreference }))
-  }, [])
-
-  const setPreprocessingProfile = useCallback((preprocessingProfileId: PreprocessingProfileId) => {
-    setConfig((current) => ({ ...current, preprocessingProfileId }))
-  }, [])
-
-  const setConfidence = useCallback((confidence: number) => {
-    setConfig((current) => ({ ...current, confidence }))
-  }, [])
-
-  const setSamplingFps = useCallback((samplingFps: number) => {
-    setConfig((current) => ({ ...current, samplingFps }))
-  }, [])
-
-  const setActiveZone = useCallback((zoneId: string) => {
-    setActiveZoneId(zoneId)
-  }, [])
-
-  const addZone = useCallback(() => {
-    const zone = createZone(nextZoneNumberRef.current++)
-    setConfig((current) => ({ ...current, zones: [...current.zones, zone] }))
-    setActiveZoneId(zone.id)
-  }, [])
-
-  const removeZone = useCallback((zoneId: string) => {
-    setConfig((current) => {
-      if (current.zones.length <= 1) {
-        return current
-      }
-      return { ...current, zones: current.zones.filter((zone) => zone.id !== zoneId) }
-    })
-    setActiveZoneId((activeId) => (activeId === zoneId ? null : activeId))
-  }, [])
-
-  const updateZoneRegion = useCallback((zoneId: string, region: RectNorm) => {
-    setConfig((current) => ({
-      ...current,
-      zones: current.zones.map((zone) => (zone.id === zoneId ? { ...zone, region: clampRect(region) } : zone)),
-    }))
-  }, [])
-
-  const updateZoneLine = useCallback((zoneId: string, lineOffset: number) => {
-    const clamped = Math.min(0.98, Math.max(0.02, lineOffset))
-    setConfig((current) => ({
-      ...current,
-      zones: current.zones.map((zone) => (zone.id === zoneId ? { ...zone, lineOffset: clamped } : zone)),
-    }))
-  }, [])
-
-  const updateZoneOrientation = useCallback((zoneId: string, lineOrientation: LineOrientation) => {
-    setConfig((current) => ({
-      ...current,
-      zones: current.zones.map((zone) => (zone.id === zoneId ? { ...zone, lineOrientation } : zone)),
-    }))
-  }, [])
-
-  const exportBaseName = (fileName ?? 'traffic-session').replace(/\.[^.]+$/, '')
 
   return {
-    videoRef,
     frameRef,
     overlayRef,
-    videoUrl,
-    fileName,
-    videoSize,
-    frameVisible,
+    connected,
+    providers,
+    models,
+    gpuAvailable,
+    videos,
+    video,
+    videoSize: video ? ({ width: video.width, height: video.height } satisfies VideoSize) : null,
+    uploadProgress,
+    liveFrame,
     loadFile,
+    selectVideo,
+    deleteVideo,
     status,
     error,
     engine,
-    gpuAvailable,
     config,
-    setModelProfile,
-    setEnginePreference,
-    setPreprocessingProfile,
-    setConfidence,
-    setSamplingFps,
+    setModel: (modelId: string) => setConfig((current) => ({ ...current, modelId })),
+    setDevice: (device: DevicePreference) => setConfig((current) => ({ ...current, device })),
+    setConfidence: (confidence: number) => setConfig((current) => ({ ...current, confidence })),
+    setSamplingFps: (samplingFps: number) => setConfig((current) => ({ ...current, samplingFps })),
     zoneEditing,
     setZoneEditing,
     activeZoneId,
-    setActiveZone,
-    addZone,
-    removeZone,
-    updateZoneRegion,
-    updateZoneLine,
-    updateZoneOrientation,
+    setActiveZone: setActiveZoneId,
+    addZone: () => {
+      const zone = createZone(nextZoneNumberRef.current++)
+      updateZones((zones) => [...zones, zone])
+      setActiveZoneId(zone.id)
+    },
+    removeZone: (zoneId: string) => {
+      updateZones((zones) => (zones.length <= 1 ? zones : zones.filter((zone) => zone.id !== zoneId)))
+      setActiveZoneId((activeId) => (activeId === zoneId ? null : activeId))
+    },
+    updateZoneRegion: (zoneId: string, region: RectNorm) =>
+      updateZones((zones) => zones.map((zone) => (zone.id === zoneId ? { ...zone, region: clampRect(region) } : zone))),
+    updateZoneLine: (zoneId: string, lineOffset: number) => {
+      const clamped = Math.min(0.98, Math.max(0.02, lineOffset))
+      updateZones((zones) => zones.map((zone) => (zone.id === zoneId ? { ...zone, lineOffset: clamped } : zone)))
+    },
+    updateZoneOrientation: (zoneId: string, lineOrientation: LineOrientation) =>
+      updateZones((zones) => zones.map((zone) => (zone.id === zoneId ? { ...zone, lineOrientation } : zone))),
     start,
-    pause,
-    resume,
-    stop,
+    pause: () => void control('pause'),
+    resume: () => void control('resume'),
+    stop: () => void control('stop'),
     reset,
-    canStart: Boolean(videoUrl) && !isBusy && config.zones.length > 0,
+    canStart: Boolean(video) && !busy && status !== 'uploading' && config.zones.length > 0 && connected,
+    busy,
     progress,
     counts,
     events,
-    exportEventsCsv: () => downloadTextFile(`${exportBaseName}-events.csv`, 'text/csv', eventsToCsv(events, config.zones)),
-    exportSummaryCsv: () =>
-      downloadTextFile(
-        `${exportBaseName}-summary.csv`,
-        'text/csv',
-        summaryToCsv(events, config.zones, config.preprocessingProfileId),
-      ),
-    exportJson: () =>
-      downloadTextFile(
-        `${exportBaseName}-session.json`,
-        'application/json',
-        JSON.stringify(
-          buildSessionExport({
-            fileName: fileName ?? 'unknown',
-            durationSeconds: progress.durationSeconds,
-            engine,
-            config,
-            events,
-          }),
-          null,
-          2,
-        ),
-      ),
+    exportUrl: api.exportUrl,
   }
 }
 
+export type TrafficAnalysis = ReturnType<typeof useTrafficAnalysis>
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 
 function createZone(zoneNumber: number): CountingZone {
   return {

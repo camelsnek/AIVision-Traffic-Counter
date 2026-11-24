@@ -1,6 +1,8 @@
 import type { CountingZone, SessionCounts, TrackSnapshot } from '../types'
 import { classColors, countingLineColor, zoneActiveColor, zoneColor } from './palette'
 
+const classInitials = { car: 'C', truck: 'T', bus: 'B', motorcycle: 'M' } as const
+
 export interface OverlayState {
   tracks: readonly TrackSnapshot[]
   zones: readonly CountingZone[]
@@ -83,7 +85,7 @@ function drawZone(
 
   const zoneCounts = state.counts?.zones.find((entry) => entry.zoneId === zone.id)
   const fontSize = 15 * unit
-  context.font = `600 ${fontSize}px ui-sans-serif, system-ui, sans-serif`
+  context.font = `600 ${fontSize}px Barlow, ui-sans-serif, system-ui, sans-serif`
 
   const label = zoneCounts
     ? zone.lineOrientation === 'vertical'
@@ -95,9 +97,9 @@ function drawZone(
   const chipWidth = context.measureText(label).width + paddingX * 2
   const chipTop = Math.max(0, top - chipHeight - 4 * unit)
 
-  context.fillStyle = 'rgba(2, 8, 20, 0.82)'
+  context.fillStyle = 'rgba(17, 19, 22, 0.82)'
   fillRoundedRect(context, left, chipTop, chipWidth, chipHeight, 6 * unit)
-  context.fillStyle = isActive ? zoneActiveColor : '#e2e8f0'
+  context.fillStyle = isActive ? zoneActiveColor : '#eef0ea'
   context.textBaseline = 'middle'
   context.fillText(label, left + paddingX, chipTop + chipHeight / 2)
   context.restore()
@@ -110,7 +112,7 @@ function drawTrack(
   height: number,
   unit: number,
 ) {
-  if (!track.confirmed && track.hits < 2) {
+  if (!track.confirmed) {
     return
   }
 
@@ -119,13 +121,14 @@ function drawTrack(
   const top = track.box.top * height
   const boxWidth = track.box.width * width
   const boxHeight = track.box.height * height
+  const counted = track.countedZones.length > 0
 
   context.save()
 
   if (track.trail.length > 1) {
     context.strokeStyle = color
-    context.globalAlpha = 0.55
-    context.lineWidth = 1.8 * unit
+    context.globalAlpha = 0.5
+    context.lineWidth = 1.6 * unit
     context.beginPath()
     context.moveTo(track.trail[0].x * width, track.trail[0].y * height)
     for (let index = 1; index < track.trail.length; index += 1) {
@@ -135,31 +138,37 @@ function drawTrack(
     context.stroke()
   }
 
-  context.globalAlpha = track.coasting ? 0.45 : 1
-  context.strokeStyle = color
-  context.lineWidth = 2.2 * unit
+  // Coasting = predicted position while the detector briefly lost the vehicle:
+  // a faint dashed box only, no label, so it never reads as a confident detection.
   if (track.coasting) {
+    context.globalAlpha = 0.4
+    context.strokeStyle = color
+    context.lineWidth = 1.6 * unit
     context.setLineDash([6 * unit, 5 * unit])
+    context.strokeRect(left, top, boxWidth, boxHeight)
+    context.restore()
+    return
   }
-  context.strokeRect(left, top, boxWidth, boxHeight)
-  context.setLineDash([])
-
-  const counted = track.countedZones.length > 0
-  const fontSize = 13 * unit
-  context.font = `600 ${fontSize}px ui-sans-serif, system-ui, sans-serif`
-  const trackState = track.confirmed ? 'tracked' : 'acquiring'
-  const label = `${track.vehicleClass.toUpperCase()} · ${trackState}${counted ? ' \u2713' : ''}`
-  const paddingX = 6 * unit
-  const chipHeight = 20 * unit
-  const chipWidth = context.measureText(label).width + paddingX * 2
-  const chipTop = Math.max(0, top - chipHeight - 2 * unit)
 
   context.globalAlpha = 1
-  context.fillStyle = counted ? color : 'rgba(2, 8, 20, 0.78)'
-  fillRoundedRect(context, left, chipTop, chipWidth, chipHeight, 5 * unit)
-  context.fillStyle = counted ? '#04121f' : '#e2e8f0'
+  context.strokeStyle = color
+  context.lineWidth = (counted ? 2.6 : 2) * unit
+  context.strokeRect(left, top, boxWidth, boxHeight)
+
+  // Compact tag: class initial + track number, tick once counted.
+  const label = `${classInitials[track.vehicleClass]}${track.id}${counted ? ' \u2713' : ''}`
+  const fontSize = 12 * unit
+  context.font = `600 ${fontSize}px Barlow, ui-sans-serif, system-ui, sans-serif`
+  const paddingX = 4 * unit
+  const chipHeight = 16 * unit
+  const chipWidth = context.measureText(label).width + paddingX * 2
+  const chipTop = Math.max(0, top - chipHeight)
+
+  context.fillStyle = counted ? color : 'rgba(17, 19, 22, 0.82)'
+  context.fillRect(left, chipTop, chipWidth, chipHeight)
+  context.fillStyle = counted ? '#111316' : color
   context.textBaseline = 'middle'
-  context.fillText(label, left + paddingX, chipTop + chipHeight / 2)
+  context.fillText(label, left + paddingX, chipTop + chipHeight / 2 + 0.5 * unit)
 
   context.restore()
 }

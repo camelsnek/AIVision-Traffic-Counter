@@ -1,143 +1,162 @@
 import { useRef, useState } from 'react'
-import type {
-  ChangeEvent,
-  DragEvent as ReactDragEvent,
-  ReactNode,
-  RefObject,
-} from 'react'
+import type { ChangeEvent, DragEvent as ReactDragEvent, ReactNode, RefObject } from 'react'
 
 import type { AnalysisProgress, AnalysisStatus, VideoSize } from '../hooks/useTrafficAnalysis'
+import { api, type VideoMeta } from '../lib/api'
 import { formatDuration } from '../lib/format'
 
 interface VideoStageProps {
-  videoRef: RefObject<HTMLVideoElement | null>
-  frameRef: RefObject<HTMLCanvasElement | null>
+  frameRef: RefObject<HTMLImageElement | null>
   overlayRef: RefObject<HTMLCanvasElement | null>
-  videoUrl: string | null
-  fileName: string | null
+  video: VideoMeta | null
   videoSize: VideoSize | null
-  frameVisible: boolean
   status: AnalysisStatus
   progress: AnalysisProgress
-  loadFile(file: File): void
+  uploadProgress: number | null
+  loadFile(file: File): Promise<void>
   /** Zone-editor layer, stacked above the overlay canvas. */
   children?: ReactNode
 }
 
 export function VideoStage({
-  videoRef,
   frameRef,
   overlayRef,
-  videoUrl,
-  fileName,
+  video,
   videoSize,
-  frameVisible,
   status,
   progress,
+  uploadProgress,
   loadFile,
   children,
 }: VideoStageProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragActive, setDragActive] = useState(false)
-  const busy = status === 'running' || status === 'paused' || status === 'loading'
 
   const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.currentTarget.files?.[0]
     if (file) {
-      loadFile(file)
+      void loadFile(file)
     }
     event.currentTarget.value = ''
   }
 
-  const handleDragOver = (event: ReactDragEvent<HTMLElement>) => {
-    event.preventDefault()
-    setDragActive(true)
+  const dragProps = {
+    onDragOver: (event: ReactDragEvent<HTMLElement>) => {
+      event.preventDefault()
+      setDragActive(true)
+    },
+    onDragLeave: () => setDragActive(false),
+    onDrop: (event: ReactDragEvent<HTMLElement>) => {
+      event.preventDefault()
+      setDragActive(false)
+      const file = event.dataTransfer.files[0]
+      if (file) {
+        void loadFile(file)
+      }
+    },
   }
 
-  const handleDragLeave = (event: ReactDragEvent<HTMLElement>) => {
-    event.preventDefault()
-    setDragActive(false)
-  }
-
-  const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
-    event.preventDefault()
-    setDragActive(false)
-    const file = event.dataTransfer.files[0]
-    if (file && (file.type === '' || file.type.startsWith('video/'))) {
-      loadFile(file)
-    }
-  }
+  const running = status === 'running' || status === 'paused' || status === 'loading'
+  const timings = progress.timings
+  const performance = progress.performance
 
   return (
-    <div className="card stage-shell">
-      {videoUrl === null ? (
+    <div className="stage-shell">
+      {video === null ? (
         <button
           type="button"
           className={dragActive ? 'dropzone is-drag' : 'dropzone'}
           onClick={() => inputRef.current?.click()}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
+          disabled={status === 'uploading'}
+          {...dragProps}
         >
-          <svg
-            width="36"
-            height="36"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <rect x="3" y="4" width="18" height="16" rx="2.5" />
-            <path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" />
-          </svg>
-          <span className="dropzone-title">Drop a traffic video here</span>
-          <span className="dropzone-hint">or click to browse</span>
-          <span className="dropzone-note">MP4, MOV, WebM — processed locally, nothing uploads</span>
+          {status === 'uploading' ? (
+            <>
+              <span className="dropzone-title">Uploading video</span>
+              <span className="upload-meter" aria-hidden="true">
+                <span style={{ width: `${(uploadProgress ?? 0) * 100}%` }} />
+              </span>
+              <span className="dropzone-hint">{Math.round((uploadProgress ?? 0) * 100)} %</span>
+            </>
+          ) : (
+            <>
+              <span className="dropzone-title">Drop a traffic video here</span>
+              <span className="dropzone-hint">or click to choose a file. MP4, MOV, MKV, AVI and TS work.</span>
+              <span className="dropzone-note">The file is stored by the local AIVision engine and never leaves this machine.</span>
+            </>
+          )}
         </button>
       ) : (
-        <>
-          <div
-            className="stage"
-            style={{ aspectRatio: videoSize ? `${videoSize.width} / ${videoSize.height}` : '16 / 9' }}
-          >
-            <video ref={videoRef} className="stage-video" src={videoUrl} playsInline preload="auto" muted />
-            <canvas
-              ref={frameRef}
-              className={frameVisible ? 'stage-frame is-visible' : 'stage-frame'}
-              aria-hidden="true"
-            />
-            <canvas ref={overlayRef} className="stage-overlay" />
-            {children}
-          </div>
-          <div className="stage-footer">
-            <div className="progress-row">
-              <div className={status === 'loading' ? 'progress-track is-loading' : 'progress-track'}>
-                <div className="progress-fill" style={{ width: `${progress.progress * 100}%` }} />
-              </div>
-              <span className="progress-time">
-                {formatDuration(progress.videoTime)} / {formatDuration(progress.durationSeconds)}
-              </span>
-            </div>
-            <div className="stage-meta">
-              <span className="file-name" title={fileName ?? undefined}>
-                {fileName}
-              </span>
-              <button
-                type="button"
-                className="btn btn-small"
-                onClick={() => inputRef.current?.click()}
-                disabled={busy}
-              >
-                Replace video
-              </button>
-            </div>
-          </div>
-        </>
+        <div
+          className="stage"
+          style={{ aspectRatio: videoSize ? `${videoSize.width} / ${videoSize.height}` : '16 / 9' }}
+          {...dragProps}
+        >
+          <img ref={frameRef} className="stage-frame" src={api.posterUrl(video.id)} alt="" draggable={false} />
+          <canvas ref={overlayRef} className="stage-overlay" />
+          {children}
+          {status === 'uploading' && (
+            <div className="stage-veil">Uploading {Math.round((uploadProgress ?? 0) * 100)} %</div>
+          )}
+        </div>
       )}
-      <input ref={inputRef} type="file" accept="video/*" hidden onChange={handleFileInput} />
+
+      {video !== null && (
+        <div className="telemetry">
+          <div className="progress-track" data-active={running}>
+            <span style={{ width: `${progress.progress * 100}%` }} />
+          </div>
+          <div className="telemetry-row">
+            <span className="telemetry-file" title={video.name}>
+              {video.name}
+            </span>
+            <span className="telemetry-time">
+              {formatDuration(progress.videoTime)} / {formatDuration(video.durationSeconds)}
+            </span>
+          </div>
+          <dl className="telemetry-stats">
+            <div>
+              <dt>Source</dt>
+              <dd>
+                {video.width}×{video.height}, {video.fps.toFixed(0)} fps
+              </dd>
+            </div>
+            {running && (
+              <>
+                <div>
+                  <dt>Analysis speed</dt>
+                  <dd>{progress.throughputFps.toFixed(0)} fps</dd>
+                </div>
+                <div>
+                  <dt>Model</dt>
+                  <dd>{(timings.inferenceMs ?? 0).toFixed(1)} ms</dd>
+                </div>
+                <div>
+                  <dt>Decode wait</dt>
+                  <dd>{(timings.decodeMs ?? 0).toFixed(1)} ms</dd>
+                </div>
+              </>
+            )}
+            {!running && performance && (
+              <>
+                <div>
+                  <dt>Analysed</dt>
+                  <dd>
+                    {performance.frames} frames in {performance.wallSeconds.toFixed(1)} s
+                  </dd>
+                </div>
+                <div>
+                  <dt>Average speed</dt>
+                  <dd>
+                    {performance.fps.toFixed(0)} fps, {performance.realtimeFactor.toFixed(1)}× real time
+                  </dd>
+                </div>
+              </>
+            )}
+          </dl>
+        </div>
+      )}
+      <input ref={inputRef} type="file" accept="video/*,.mkv,.ts,.mts" hidden onChange={handleFileInput} />
     </div>
   )
 }

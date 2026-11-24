@@ -1,166 +1,138 @@
 import { useId } from 'react'
 
-import { getPreprocessingProfile, preprocessingProfiles } from '../lib/framePreprocessing'
-import { getModelProfile, modelProfiles } from '../lib/modelProfiles'
-import type { AnalysisConfig, EnginePreference, ModelProfileId, PreprocessingProfileId } from '../types'
+import type { ModelInfo } from '../lib/api'
+import type { AnalysisConfig, DevicePreference } from '../types'
+
+const samplingOptions = [
+  { value: 0, label: 'Every frame', hint: 'Most precise. Recommended with a GPU.' },
+  { value: 15, label: '15 per second', hint: 'Good for fast roads on slower machines.' },
+  { value: 10, label: '10 per second', hint: 'Fine for city traffic.' },
+  { value: 5, label: '5 per second', hint: 'Quick previews only; fast vehicles may be missed.' },
+] as const
 
 interface ConfigPanelProps {
   config: AnalysisConfig
-  /** Config is captured when a run starts, so inputs lock while busy. */
-  disabled: boolean
+  models: ModelInfo[]
   gpuAvailable: boolean | null
-  setModelProfile(modelProfileId: ModelProfileId): void
-  setEnginePreference(preference: EnginePreference): void
-  setPreprocessingProfile(preprocessingProfileId: PreprocessingProfileId): void
+  providers: string[]
+  /** Settings are captured when a run starts, so inputs lock while busy. */
+  disabled: boolean
+  setModel(modelId: string): void
+  setDevice(device: DevicePreference): void
   setConfidence(confidence: number): void
   setSamplingFps(samplingFps: number): void
 }
 
 export function ConfigPanel({
   config,
-  disabled,
+  models,
   gpuAvailable,
-  setModelProfile,
-  setEnginePreference,
-  setPreprocessingProfile,
+  providers,
+  disabled,
+  setModel,
+  setDevice,
   setConfidence,
   setSamplingFps,
 }: ConfigPanelProps) {
   const modelId = useId()
-  const engineId = useId()
-  const preprocessingId = useId()
+  const deviceId = useId()
   const confidenceId = useId()
   const samplingId = useId()
-  const confidencePct = ((config.confidence - 0.2) / 0.4) * 100
-  const samplingPct = ((config.samplingFps - 5) / 10) * 100
-  const engineHint =
-    gpuAvailable === null
-      ? 'Checking browser GPU support…'
-      : config.enginePreference === 'gpu'
-        ? 'Uses WebGPU with the high-performance adapter. Best throughput when supported.'
-        : config.enginePreference === 'cpu'
-          ? 'Uses the quantized model on WebAssembly. Most compatible, but usually slower.'
-          : gpuAvailable
-            ? 'WebGPU is available. Auto uses the GPU and falls back to CPU if initialization fails.'
-            : 'WebGPU is unavailable in this browser. Auto will use the CPU/WASM runtime.'
+  const model = models.find((candidate) => candidate.id === config.modelId)
+  const sampling = samplingOptions.find((option) => option.value === config.samplingFps) ?? samplingOptions[0]
+  const gpuName = providers.includes('TensorrtExecutionProvider')
+    ? 'NVIDIA GPU with TensorRT'
+    : providers.includes('CUDAExecutionProvider')
+      ? 'NVIDIA GPU with CUDA'
+      : providers.includes('DmlExecutionProvider')
+        ? 'GPU with DirectML'
+        : null
 
   return (
-    <section className="card" aria-label="Analysis configuration">
-      <header className="card-head">
-        <h2 className="card-title">Configuration</h2>
+    <section className="panel" aria-label="Settings">
+      <header className="panel-head">
+        <h2>Settings</h2>
       </header>
+
       <div className="field">
-        <div className="field-head">
-          <label htmlFor={modelId}>Detection model</label>
-        </div>
+        <label htmlFor={modelId}>Detection model</label>
         <select
           id={modelId}
           className="select"
-          value={config.modelProfileId}
-          disabled={disabled}
-          onChange={(event) => {
-            const profile = modelProfiles.find((candidate) => candidate.id === event.target.value)
-            if (profile) {
-              setModelProfile(profile.id)
-            }
-          }}
+          value={config.modelId}
+          disabled={disabled || models.length === 0}
+          onChange={(event) => setModel(event.target.value)}
         >
-          {modelProfiles.map((profile) => (
-            <option key={profile.id} value={profile.id}>
-              {profile.label}
+          {models.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>
+              {candidate.label}
             </option>
           ))}
         </select>
-        <p className="field-hint">{getModelProfile(config.modelProfileId).description}</p>
+        {model && <p className="field-hint">{model.description}</p>}
       </div>
+
       <div className="field">
-        <div className="field-head">
-          <label htmlFor={engineId}>Processing device</label>
-        </div>
+        <label htmlFor={deviceId}>Hardware</label>
         <select
-          id={engineId}
+          id={deviceId}
           className="select"
-          value={config.enginePreference}
+          value={config.device}
           disabled={disabled}
           onChange={(event) => {
-            const preference = event.target.value
-            if (preference === 'auto' || preference === 'gpu' || preference === 'cpu') {
-              setEnginePreference(preference)
+            const value = event.target.value
+            if (value === 'auto' || value === 'gpu' || value === 'cpu') {
+              setDevice(value)
             }
           }}
         >
-          <option value="auto">Auto — prefer GPU</option>
+          <option value="auto">Automatic</option>
           <option value="gpu" disabled={gpuAvailable === false}>
-            GPU — WebGPU{gpuAvailable === false ? ' (unavailable)' : ''}
+            GPU only{gpuAvailable === false ? ' (not available)' : ''}
           </option>
-          <option value="cpu">CPU — WebAssembly</option>
+          <option value="cpu">CPU only</option>
         </select>
-        <p className="field-hint">{engineHint}</p>
+        <p className="field-hint">
+          {gpuName ? `Found ${gpuName}.` : gpuAvailable === null ? 'Checking hardware…' : 'No GPU found; the CPU will be used.'}
+        </p>
       </div>
+
       <div className="field">
-        <div className="field-head">
-          <label htmlFor={preprocessingId}>Image processing</label>
-        </div>
+        <label htmlFor={samplingId}>Frames to analyse</label>
         <select
-          id={preprocessingId}
+          id={samplingId}
           className="select"
-          value={config.preprocessingProfileId}
+          value={config.samplingFps}
           disabled={disabled}
-          onChange={(event) => {
-            const profile = preprocessingProfiles.find((candidate) => candidate.id === event.target.value)
-            if (profile) {
-              setPreprocessingProfile(profile.id)
-            }
-          }}
+          onChange={(event) => setSamplingFps(Number(event.target.value))}
         >
-          {preprocessingProfiles.map((profile) => (
-            <option key={profile.id} value={profile.id}>
-              {profile.label}{profile.id === 'night-clahe-v1' ? ' — Experimental' : ''}
+          {samplingOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
             </option>
           ))}
         </select>
-        <p className="field-hint">{getPreprocessingProfile(config.preprocessingProfileId).description}</p>
+        <p className="field-hint">{sampling.hint}</p>
       </div>
+
       <div className="field">
-        <div className="field-head">
-          <label htmlFor={confidenceId}>Confidence</label>
-          <span className="field-value">{config.confidence.toFixed(2)}</span>
+        <div className="field-row">
+          <label htmlFor={confidenceId}>Detection confidence</label>
+          <output htmlFor={confidenceId}>{Math.round(config.confidence * 100)} %</output>
         </div>
         <input
           id={confidenceId}
           className="range"
           type="range"
           min={0.2}
-          max={0.6}
+          max={0.7}
           step={0.05}
           value={config.confidence}
           disabled={disabled}
-          style={{
-            backgroundImage: `linear-gradient(to right, var(--accent) ${confidencePct}%, var(--bg-3) ${confidencePct}%)`,
-          }}
+          style={{ ['--fill' as string]: `${((config.confidence - 0.2) / 0.5) * 100}%` }}
           onChange={(event) => setConfidence(event.currentTarget.valueAsNumber)}
         />
-      </div>
-      <div className="field">
-        <div className="field-head">
-          <label htmlFor={samplingId}>Sampling rate</label>
-          <span className="field-value">{config.samplingFps} fps of video time</span>
-        </div>
-        <input
-          id={samplingId}
-          className="range"
-          type="range"
-          min={5}
-          max={15}
-          step={1}
-          value={config.samplingFps}
-          disabled={disabled}
-          style={{
-            backgroundImage: `linear-gradient(to right, var(--accent) ${samplingPct}%, var(--bg-3) ${samplingPct}%)`,
-          }}
-          onChange={(event) => setSamplingFps(event.currentTarget.valueAsNumber)}
-        />
-        <p className="field-hint">Lower rates analyze fewer frames and finish sooner; 5 fps suits most road footage.</p>
+        <p className="field-hint">Lower finds more distant vehicles but risks false counts.</p>
       </div>
     </section>
   )

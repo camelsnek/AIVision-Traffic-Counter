@@ -1,13 +1,14 @@
 import type { VehicleClass } from '../types'
 
-/** Canonical vehicle-class colors, shared by the canvas overlay and the UI legend. */
+/** Vehicle-class colours, shared by the video overlay and the count board. */
 export const classColors: Record<VehicleClass, string> = {
-  car: '#38bdf8',
-  truck: '#fbbf24',
-  bus: '#c084fc',
-  motorcycle: '#4ade80',
+  car: '#7cc4f0',
+  truck: '#f2b330',
+  bus: '#c79bf2',
+  motorcycle: '#46c38a',
 }
 
-export const zoneColor = '#f8fafc'
-export const zoneActiveColor = '#22d3ee'
-export const countingLineColor = '#fb7185'
+/** Zone outline: road-marking white. The active zone and counting line use traffic-sign amber. */
+export const zoneColor = '#eef0ea'
+export const zoneActiveColor = '#ffc94d'
+export const countingLineColor = '#f2b330'

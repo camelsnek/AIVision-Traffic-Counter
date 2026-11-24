@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import http.client
 import os
+import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -79,24 +81,35 @@ def model_path(profile: ModelProfile) -> Path:
     return models_dir() / f"{profile.id}.onnx"
 
 
+_download_lock = threading.Lock()
+
+
 def ensure_model(model_id: str, progress: bool = True) -> Path:
-    """Returns the local ONNX path, downloading it first if needed."""
+    """Returns the local ONNX path, downloading it first if needed.
+
+    Downloads are serialised in-process and written to a unique temp file, so a
+    concurrent download (another thread or a CLI run) can never corrupt or
+    steal the file; whoever finishes first wins and the other reuses it.
+    """
     profile = get_profile(model_id)
     target = model_path(profile)
-    if target.exists() and target.stat().st_size > 0:
-        return target
+    with _download_lock:
+        if target.exists() and target.stat().st_size > 0:
+            return target
 
-    partial = target.with_suffix(".onnx.part")
-    if progress:
-        print(f"Downloading {profile.label} from {profile.url} ...", flush=True)
-    try:
-        with partial.open("wb") as out:
-            _https_download(profile.url, out, progress)
-        partial.replace(target)
-    except (OSError, ValueError, http.client.HTTPException) as error:
-        partial.unlink(missing_ok=True)
-        raise RuntimeError(f"Could not download model '{model_id}': {error}") from error
-    return target
+        partial = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part")
+        if progress:
+            print(f"Downloading {profile.label} from {profile.url} ...", flush=True)
+        try:
+            with partial.open("wb") as out:
+                _https_download(profile.url, out, progress)
+            if not (target.exists() and target.stat().st_size > 0):
+                partial.replace(target)
+        except (OSError, ValueError, http.client.HTTPException) as error:
+            raise RuntimeError(f"Could not download model '{model_id}': {error}") from error
+        finally:
+            partial.unlink(missing_ok=True)
+        return target
 
 
 def _https_download(url: str, out, progress: bool, max_redirects: int = 5) -> None:
