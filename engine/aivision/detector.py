@@ -7,6 +7,7 @@ actually initialises and runs a warm-up inference.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import time
@@ -56,7 +57,22 @@ def _import_ort():
             preload()  # loads pip-installed CUDA/cuDNN DLLs on Windows
         except Exception as error:  # noqa: BLE001 - optional best effort
             log.debug("preload_dlls failed: %s", error)
+    _add_tensorrt_dll_dir()
     return ort
+
+
+def _add_tensorrt_dll_dir() -> None:
+    """Makes pip-installed TensorRT DLLs (tensorrt-cu13-libs) loadable on Windows."""
+    if os.name != "nt":
+        return
+    try:
+        import tensorrt_libs  # type: ignore[import-not-found]
+    except ImportError:
+        return
+    folder = os.path.dirname(tensorrt_libs.__file__)
+    with contextlib.suppress(OSError):
+        os.add_dll_directory(folder)
+    os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
 
 
 def _provider_candidates(preference: DevicePreference, available: list[str]) -> list[tuple[str, dict]]:
