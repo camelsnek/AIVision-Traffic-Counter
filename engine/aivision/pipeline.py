@@ -151,8 +151,11 @@ class Pipeline:
                 ):
                     if self._stop.is_set():
                         break
-                    now = time.perf_counter()
-                    frames_q.put((frame, (now - last) * 1e3))
+                    # Tensor prep runs here so it overlaps GPU inference on the main loop.
+                    p0 = time.perf_counter()
+                    tensor = self.detector.preprocess(frame.model_rgb)
+                    prep_ms = (time.perf_counter() - p0) * 1e3
+                    frames_q.put((frame, tensor, (p0 - last) * 1e3, prep_ms))
                     last = time.perf_counter()
             except BaseException as error:  # noqa: BLE001 - surfaced to caller
                 decode_error.append(error)
@@ -176,10 +179,10 @@ class Pipeline:
                 if item is _SENTINEL:
                     break
                 frame: DecodedFrame = item[0]
-                decode_ms: float = item[1]
+                tensor = item[1]
+                decode_ms: float = item[2]
+                prep_ms: float = item[3]
 
-                t0 = time.perf_counter()
-                tensor = self.detector.preprocess(frame.model_rgb)
                 t1 = time.perf_counter()
                 boxes, logits = self.detector.infer(tensor)
                 t2 = time.perf_counter()
@@ -204,7 +207,7 @@ class Pipeline:
                             events=new_events,
                             timings=FrameTimings(
                                 decode_ms,
-                                (t1 - t0) * 1e3,
+                                prep_ms,
                                 (t2 - t1) * 1e3,
                                 (t3 - t2) * 1e3,
                                 (t4 - t3) * 1e3,
